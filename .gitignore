@@ -1,0 +1,12 @@
+# Root-level ignores (covers items outside PROJECT/)
+venv/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Generated at runtime
+PROJECT/DATA_FOLDER/processed/transit_graph.pkl
+PROJECT/DATA_FOLDER/processed/traffic_model.json
