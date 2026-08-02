@@ -5,7 +5,9 @@
 
 ## Repo rule (one repo, one branch, pull-only)
 - Latest GitHub `main` is ALWAYS the master. `git pull` before work, push only after green.
-- Never `git fetch --filter=blob:none` (42MB PBF + 76MB pickle blobs → breaks on flaky nets).
+- Large files (PBF, pickle) are **Git LFS** — after clone run `git lfs install` + `git lfs pull`
+  (GitHub downloads them on `git pull` once LFS is installed).
+- Never `git fetch --filter=blob:none` (breaks on flaky nets).
 - Never keep divergent local commits (it corrupted a collaborator's machine — see MASTER §19.3).
 
 ## Running (from this `PROJECT/` folder)

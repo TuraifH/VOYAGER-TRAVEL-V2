@@ -29,8 +29,11 @@
 - Rule going forward: **one repo, one branch (`main`), one source of truth (this file + the
   `PROJECT/` folder).** Never create divergent local commits (that caused the friend's machine
   to break — see §19.3). The latest GitHub `main` is ALWAYS the master; local machines pull it.
-- `bangalore.osm.pbf` (42MB, GraphHopper map) is **committed to the repo** so a fresh clone has
-  everything. `.env` (secrets) is NOT in git — copy it separately.
+- `bangalore.osm.pbf` (42MB, GraphHopper map) and `DATA_FOLDER/processed/gtfs_cache.pkl` (76MB)
+  are **tracked via Git LFS** (`git lfs migrate import` already run, `.gitattributes` committed).
+  A fresh clone must have `git lfs install` + `git lfs pull` to materialize the real bytes
+  (GitHub auto-downloads on `git pull` when LFS is installed). `.env` (secrets) is NOT in git —
+  copy it separately.
 
 ---
 
@@ -1116,13 +1119,16 @@ A collaborator's machine got a **partial clone** (`git fetch --filter=blob:none`
 `git reset --hard` over a flaky connection. The 42MB PBF + 76MB pickle blobs failed mid-download
 (`curl 56 schannel: server closed abruptly`), leaving `index.lock` stale, a half-materialized
 working tree, and a stuck reset. **Lessons:**
-- **Never use `--filter=blob:none`** on this repo (big committed blobs).
+- **Never use `--filter=blob:none`** on this repo.
+- **Large files are Git LFS** (`.gitattributes` committed): `*.pbf`, `*.pkl`, `*.osm`, `*.zip`,
+  etc. LFS objects are fetched by the LFS filter on `git pull`/`clone` — no giant raw blobs in the
+  main object store anymore (smaller clone, resilient to the exact failure above). On any new
+  machine: `git lfs install`, then `git lfs pull`.
 - **Never let two machines diverge on `main`** — always `git pull` first, keep local commits
   zero. A forced-update/rewrite on `origin/main` is what makes reset painful.
 - For a fresh collaborator: **download the GitHub ZIP** (browser resumes) and extract over the
-  folder (`robocopy <zipdir> <folder> /E /IS /IT`), or `git clone` when the network is reliable.
-  `.env` and `bangalore.osm.pbf` are the two non-git files to hand over (PBF is now committed; only
-  `.env` still needs manual copy).
+  folder (`robocopy <zipdir> <folder> /E /IS /IT`), or `git clone` when the network is reliable
+  (LFS bytes come down on first pull). Only `.env` (secrets) still needs manual copy.
 
 ---
 
@@ -1302,10 +1308,11 @@ is retired — never start the old root compose).
 ### Friend / collaborator setup (one repo, one branch, pull-only)
 1. `git clone <new-repo-url> VOYAGER` (or download the GitHub ZIP — browser resumes on flaky nets).
 2. **Copy `.env`** manually (secrets are never in git) — Google/SerpAPI/OpenRouter keys required.
-3. Everything else (PBF, GTFS pickle, config) is committed — nothing more to download.
+3. `git lfs install` then `git lfs pull` (or just `git pull` with LFS installed — downloads the
+   PBF + GTFS pickle automatically). If ZIP route: LFS files download on first `git pull`.
 4. `docker compose up -d graphhopper`, then backend + frontend as above.
 5. Rule: **`git pull` before work, `git push` after green tests. Never diverge on `main`.**
-   Never use `git fetch --filter=blob:none` on this repo (big committed blobs).
+   Never use `git fetch --filter=blob:none` on this repo.
 
 ---
 
