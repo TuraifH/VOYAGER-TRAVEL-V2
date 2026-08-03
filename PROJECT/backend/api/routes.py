@@ -22,6 +22,7 @@ from fastapi import APIRouter, Response
 from backend.services import app_state
 from backend.services.data_schema import Place
 
+
 router = APIRouter()
 search_router = APIRouter()  # /api/search/* + /api/rides/* (no /routes prefix)
 
