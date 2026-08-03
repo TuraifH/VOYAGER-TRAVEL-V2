@@ -51,6 +51,18 @@ const MODE_COLOR: Record<string, string> = {
   ride: "#f39c12", connecting: "#f39c12", dropoff: "#fd79a8",
 };
 
+// distinct per-hop colors so the growing journey is traceable as a numbered
+// sequence of differently-colored segments (§1.7)
+const HOP_COLORS = [
+  "#6c5ce7", "#e17055", "#27ae60", "#0984e3", "#00cec9",
+  "#e84393", "#f39c12", "#a29bfe", "#d63031", "#00b894",
+];
+
+function hopIcon(n: number) {
+  const c = HOP_COLORS[(n - 1) % HOP_COLORS.length];
+  return L.divIcon({ className: "", html: `<div class="marker-num" style="background:${c}">${n}</div>`, iconSize: [24, 24] });
+}
+
 function legGeometry(opt: HopOption): Coord[] {
   const g = opt.geometry;
   if (!g) return [];
@@ -79,20 +91,22 @@ function NearbyRadius() {
 function RoutePolylines() {
   const { journey, ridePath } = useApp();
   const segs = journey.segments?.segments ?? [];
-  const confirmedIds = new Set((journey.chosenLegs as HopOption[] | undefined)?.map((c) => c.optionId) ?? []);
+  const chosen = journey.chosenLegs as HopOption[] | undefined;
+  const chosenByOpt = new Map((chosen ?? []).map((c) => [c.optionId, c]));
 
-  const lines: { pts: Coord[]; mode: string; solid: boolean; faint: boolean }[] = [];
+  const lines: { pts: Coord[]; mode: string; solid: boolean; faint: boolean; hop: number | null }[] = [];
 
   for (const seg of segs) {
     for (const opt of seg.options ?? []) {
       const pts = legGeometry(opt);
       if (pts.length < 2) continue;
-      const confirmed = confirmedIds.has(opt.optionId);
+      const hopIdx = chosenByOpt.has(opt.optionId) ? (chosen?.findIndex((c) => c.optionId === opt.optionId) ?? -1) + 1 : -1;
       lines.push({
         pts,
         mode: opt.mode ?? "connecting",
-        solid: confirmed || !!opt.isTopRecommended,
-        faint: !confirmed && !opt.isTopRecommended,
+        solid: hopIdx > 0 || !!opt.isTopRecommended,
+        faint: hopIdx < 0 && !opt.isTopRecommended,
+        hop: hopIdx > 0 ? hopIdx : null,
       });
     }
   }
@@ -103,10 +117,10 @@ function RoutePolylines() {
         <Polyline
           key={i}
           positions={ln.pts}
-          color={MODE_COLOR[ln.mode] ?? "#6c5ce7"}
-          weight={ln.faint ? 3 : ln.solid ? 5 : 4}
-          dashArray={ln.faint ? "4 6" : ln.mode === "walk" && !ln.solid ? "6 6" : undefined}
-          opacity={ln.faint ? 0.3 : 0.85}
+          color={ln.hop != null ? HOP_COLORS[(ln.hop - 1) % HOP_COLORS.length] : (MODE_COLOR[ln.mode] ?? "#6c5ce7")}
+          weight={ln.hop != null ? 6 : ln.faint ? 3 : ln.solid ? 5 : 4}
+          dashArray={ln.faint ? "4 6" : ln.mode === "walk" && ln.hop == null && !ln.solid ? "6 6" : undefined}
+          opacity={ln.hop != null ? 0.95 : ln.faint ? 0.3 : 0.85}
         />
       ))}
       {ridePath && ridePath.length > 1 && (
@@ -117,6 +131,25 @@ function RoutePolylines() {
           opacity={0.95}
         />
       )}
+    </>
+  );
+}
+
+// numbered markers on the confirmed path (order = journey leg index, §1.7)
+function ConfirmedLegs() {
+  const { journey } = useApp();
+  const chosen = journey.chosenLegs as HopOption[] | undefined;
+  if (!chosen?.length) return null;
+  return (
+    <>
+      {chosen.map((opt, i) => {
+        const g = opt.geometry;
+        if (!g?.length) return null;
+        const last = g[g.length - 1];
+        const [la, ln] = [Number(last[0]), Number(last[1])];
+        if (!inBengaluru(la, ln)) return null;
+        return <Marker key={opt.optionId || i} position={[la, ln]} icon={hopIcon(i + 1)} />;
+      })}
     </>
   );
 }
@@ -228,6 +261,7 @@ export default function MapView() {
       <Pins />
       <NearbyRadius />
       <RoutePolylines />
+      <ConfirmedLegs />
       <JourneyPosition />
     </MapContainer>
   );

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp, type Mode } from "../context/AppContext";
 import HeaderBar from "../components/HeaderBar";
 import MapView from "../components/MapView";
@@ -19,6 +19,29 @@ const TABS: { key: Mode; label: string; icon: string }[] = [
 
 export default function MainPage() {
   const { mode, setMode, clearTransient, setUserLoc, flowOpen, setFlowOpen, flowParams } = useApp();
+
+  const [flowH, setFlowH] = useState(38); // % of map-wrap height
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = flowH;
+    dragRef.current = { startY, startH };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startY - ev.clientY; // drag up grows panel
+      const newH = Math.min(75, Math.max(20, dragRef.current.startH + (delta / window.innerHeight) * 100));
+      setFlowH(newH);
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
 
   const changeMode = (m: Mode) => {
     if (m === mode) return;
@@ -55,7 +78,10 @@ export default function MainPage() {
           <MapView />
           <NewsPopup />
           {flowOpen && (
-            <section className="flow-sheet glass-strong">
+            <section className="flow-sheet glass-strong" style={{ height: `${flowH}%` }}>
+              <div className="resize-handle" onMouseDown={startResize} title="Drag to resize">
+                <span className="resize-dot" />
+              </div>
               <div className="flow-sheet-head">
                 <span className="row">
                   <span className="material-symbols-outlined">route</span>

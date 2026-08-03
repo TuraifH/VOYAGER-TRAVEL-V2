@@ -53,6 +53,27 @@ export function dedupeOptions(options: HopOption[]): HopOption[] {
   return out;
 }
 
+// de-dup branches that resolve to the SAME physical stop. Verified by rounded
+// coordinates first (≈300 m at Bengaluru latitude), then by name, so two buses
+// into the same stop collapse into one node (§2.1).
+const COORD_ROUND = 0.0027; // ~300 m
+function dedupeByStop(options: HopOption[]): HopOption[] {
+  const groups = new Map<string, HopOption[]>();
+  const key = (o: HopOption) =>
+    `${Math.round((o.destinationStop?.lat ?? 0) / COORD_ROUND)}|${Math.round((o.destinationStop?.lng ?? 0) / COORD_ROUND)}`;
+  for (const o of options) {
+    const k = key(o);
+    const arr = groups.get(k) ?? [];
+    arr.push(o);
+    groups.set(k, arr);
+  }
+  const out: HopOption[] = [];
+  for (const arr of groups.values()) {
+    out.push(arr.find((o) => o.isTopRecommended) ?? arr[0]);
+  }
+  return out;
+}
+
 // client-side filter for a hop column: options must connect from the previously
 // chosen stop, depart after its arrival + catch buffer, and never route back to a
 // stop already on the journey (PROMPT_3 §T3 + §20 #37)
@@ -82,17 +103,23 @@ export function optionsForLevel(seg: Segment | undefined, confirmedUpTo: HopOpti
   return dedupeOptions(opts).slice(0, MAX_VISIBLE);
 }
 
-// ============================================================ tree layout math
+// ============================================================ layout
+//
+// Fixed-column layered tree. Each depth is one COLUMN on the x axis. The chosen
+// path rides a single horizontal RAIL line (y = RAIL_Y). A rail node's
+// alternative branches fan symmetrically ABOVE/BELOW the rail inside their own
+// column, so no node box can overlap another and edges leave the rail without
+// crossing (§1). X advances one column per depth (rough distance feel §1.9).
 
-const NODE_W = 168;
-const NODE_H = 50;
-const MIN_EDGE = 84;
-const MAX_EDGE = 190;
-const Y_GAP = 78;
-const TOP_PAD = 46;
-const LEFT_PAD = 20;
-const RIGHT_PAD = 40;
-const MAX_CHILDREN = 3; // branches capped per stop node (IMPLEMENTATION_PLAN §5)
+const NODE_W = 172;
+const NODE_H = 54;
+const COL_W = 250;   // horizontal stride per depth
+const RAIL_Y = 170;  // the horizontal rail the chosen path rides
+const ALT_OFF = 78;  // vertical offset of each alternative from the rail
+const LEFT_PAD = 26;
+const RIGHT_PAD = 70;
+const TOP_PAD = 20;
+const MAX_ALTS = 2;  // alternatives per rail node (rail + these = MAX_CHILDREN)
 
 interface TNode {
   id: string;
@@ -104,6 +131,7 @@ interface TNode {
   kind: "source" | "dest" | "stop";
   stopLat?: number;
   stopLng?: number;
+  confirmed?: boolean;
 }
 
 interface TEdge {
@@ -133,100 +161,90 @@ function buildTree(
 ): TreeLayout {
   const nodes: TNode[] = [];
   const edges: TEdge[] = [];
-  let maxX = LEFT_PAD;
-  let minY = Infinity;
-  let maxY = -Infinity;
   let nid = 0;
-
-  const mk = (depth: number, x: number, y: number, label: string, kind: "source" | "dest" | "stop",
-              sub: string | null, stop?: HopOption["destinationStop"]): TNode => {
-    const n: TNode = { id: `n${nid++}`, depth, x, y, label, sub, kind, stopLat: stop?.lat, stopLng: stop?.lng };
+  const mk = (depth: number, x: number, y: number, label: string, kind: TNode["kind"],
+              sub: string | null, stop?: HopOption["destinationStop"], confirmedFlag = false): TNode => {
+    const n: TNode = {
+      id: `n${nid++}`, depth, x, y, label, sub, kind,
+      stopLat: stop?.lat, stopLng: stop?.lng, confirmed: confirmedFlag,
+    };
     nodes.push(n);
-    maxX = Math.max(maxX, x + NODE_W);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
     return n;
   };
+  const edgeLabel = (opt: HopOption) =>
+    opt.mode === "walk" ? "walk"
+      : opt.routeNumber ?? MODE_META[opt.mode ?? ""]?.label ?? opt.mode ?? "";
 
-  const placeChildren = (parent: TNode, depth: number) => {
-    const seg = levels[depth];
-    if (!seg) return;
-    let children = optionsForLevel(seg, confirmed.slice(0, depth), depth).slice(0, MAX_CHILDREN);
-    if (children.length === 0) return;
+  const kmRoot = havKm(source ?? undefined, dest);
 
-    const confirmedOpt = depth < confirmed.length ? confirmed[depth] : null;
-    const hasConfirmed = confirmedOpt != null;
-    const confirmedInList = hasConfirmed && children.some((c) => c.optionId === confirmedOpt.optionId);
-    if (hasConfirmed && !confirmedInList) {
-      if (children.length >= MAX_CHILDREN) children = children.slice(0, MAX_CHILDREN - 1);
-      children.push(confirmedOpt!);
-    }
-    // stable order: confirmed first, then top-recommended, then the rest
-    children = children.filter((c) => !hasConfirmed || c.optionId !== confirmedOpt!.optionId);
-    const ordered = [
-      ...(hasConfirmed ? [confirmedOpt!] : []),
-      ...children.filter((c) => c.isTopRecommended),
-      ...children.filter((c) => !c.isTopRecommended),
-    ];
+  // ---- root + rail (confirmed path) --------------------------------
+  const root = mk(0, LEFT_PAD, RAIL_Y, source?.name ?? "Source", "source",
+    kmRoot != null ? `→ ${kmRoot.toFixed(1)} km to dest` : null, undefined, true);
 
-    const maxDist = Math.max(1, ...ordered.map((c) => c.distanceKm ?? 0));
-    const n = ordered.length;
-    const mid = Math.floor(n / 2);
-
-    for (let k = 0; k < n; k++) {
-      const c = ordered[k];
-      const isConfirmed = hasConfirmed && c.optionId === confirmedOpt!.optionId;
-      const edgeLen = MIN_EDGE + ((c.distanceKm ?? 0) / maxDist) * (MAX_EDGE - MIN_EDGE);
-      let cy = parent.y + (k - mid) * Y_GAP;
-      if (isConfirmed) cy = parent.y; // chosen path stays horizontal
-      const cx = parent.x + NODE_W + edgeLen;
-      const km = havKm(c.destinationStop, dest);
-      const child = mk(
-        depth + 1, cx, cy,
-        c.destinationStop?.name ?? (c.mode === "walk" ? "Walk" : "Stop"),
-        "stop",
-        km != null ? `→ ${km.toFixed(1)} km to dest` : null,
-        c.destinationStop,
-      );
-      edges.push({
-        from: parent, to: child, option: c, confirmed: isConfirmed,
-        label: c.mode === "walk" ? "walk" : c.routeNumber ?? MODE_META[c.mode ?? ""]?.label ?? c.mode ?? "",
-        mode: c.mode ?? "connecting",
-        fromDepth: depth, km: c.distanceKm ?? null,
-      });
-      if (isConfirmed) {
-        // only the chosen path expands deeper (alternatives are single-branch)
-        placeChildren(child, depth + 1);
-      }
-    }
-  };
-
-  const root = mk(0, LEFT_PAD, TOP_PAD, source?.name ?? "Source", "source",
-    dest ? `→ ${havKm(source ?? undefined, dest)?.toFixed(1) ?? "?"} km to dest` : null);
-  placeChildren(root, 0);
-
-  // final destination node when the journey is complete (or as the end cap)
-  const lastConfirmedStop = confirmed.length
-    ? nodes.find((n) => n.kind === "stop" && n.label === confirmed[confirmed.length - 1].destinationStop?.name)
-    : null;
-  const lastStop = lastConfirmedStop ?? (confirmed.length ? nodes.slice().reverse().find((n) => n.kind === "stop") : null);
-  if (complete && lastStop) {
-    const dm = mk(
-      lastStop.depth + 1, lastStop.x + NODE_W + MIN_EDGE + 30, lastStop.y,
-      dest?.name ?? "Destination", "dest",
-      "Final stop", dest ?? undefined,
-    );
+  const rail: TNode[] = [root];
+  for (let d = 0; d < confirmed.length; d++) {
+    const opt = confirmed[d];
+    const km = havKm(opt.destinationStop, dest);
+    const node = mk(d + 1, LEFT_PAD + (d + 1) * COL_W, RAIL_Y,
+      opt.destinationStop?.name ?? "Stop", "stop",
+      km != null ? `→ ${km.toFixed(1)} km to dest` : null, opt.destinationStop, true);
+    rail.push(node);
     edges.push({
-      from: lastStop, to: dm, confirmed: true, label: "arrive", mode: "walk",
-      fromDepth: lastStop.depth, km: null, option: {} as HopOption,
+      from: rail[d], to: node, option: opt, confirmed: true,
+      label: edgeLabel(opt), mode: opt.mode ?? "walk",
+      fromDepth: d, km: opt.distanceKm ?? null,
     });
   }
 
-  return {
-    nodes, edges,
-    width: maxX + RIGHT_PAD,
-    height: Math.max(TOP_PAD * 2 + NODE_H, maxY - minY + NODE_H + TOP_PAD * 2),
-  };
+  // ---- destination cap ----------------------------------------------
+  if (complete && rail.length > 1) {
+    const last = rail[rail.length - 1];
+    const dm = mk(last.depth + 1, last.x + COL_W, RAIL_Y,
+      dest?.name ?? "Destination", "dest", "Final stop", dest ?? undefined, true);
+    edges.push({
+      from: last, to: dm, confirmed: true, label: "arrive", mode: "walk",
+      fromDepth: last.depth, km: null, option: {} as HopOption,
+    });
+    rail.push(dm);
+  }
+
+  // ---- alternatives: fan above/below each rail node -----------------
+  for (let d = 0; d <= rail.length - 1; d++) {
+    const seg = levels[d];
+    if (!seg) continue;
+    const base = confirmed.slice(0, d);
+    let alts = optionsForLevel(seg, base, d);
+    // never duplicate the rail's own next stop as an alternative
+    const railNext = d < rail.length - 1 ? rail[d + 1].label.toLowerCase() : null;
+    alts = alts.filter((o) => {
+      const stopName = o.destinationStop?.name?.toLowerCase() ?? "";
+      return !(railNext && stopName === railNext);
+    });
+    alts = dedupeByStop(alts).slice(0, MAX_ALTS);
+
+    // alternate above/below the rail symmetrically; rail line stays clear
+    const sides = [1, -1];
+    alts.forEach((opt, k) => {
+      const km = havKm(opt.destinationStop, dest);
+      const side = sides[k % sides.length];
+      const offset = (Math.floor(k / sides.length) + 1) * ALT_OFF * side;
+      const node = mk(d + 1, LEFT_PAD + (d + 1) * COL_W, RAIL_Y + offset,
+        opt.destinationStop?.name ?? "Stop", "stop",
+        km != null ? `→ ${km.toFixed(1)} km to dest` : null, opt.destinationStop);
+      edges.push({
+        from: rail[d], to: node, option: opt, confirmed: false,
+        label: edgeLabel(opt), mode: opt.mode ?? "walk",
+        fromDepth: d, km: opt.distanceKm ?? null,
+      });
+    });
+  }
+
+  // ---- bounds --------------------------------------------------------
+  const lastCol = Math.max(0, ...nodes.map((n) => n.depth));
+  const width = LEFT_PAD + (lastCol + 1) * COL_W + RIGHT_PAD;
+  const maxAltY = Math.max(...nodes.map((n) => n.y));
+  const height = maxAltY + NODE_H / 2 + TOP_PAD;
+  return { nodes, edges, width, height };
 }
 
 // ============================================================ component
@@ -261,9 +279,12 @@ export default function HopTreeView({ levels, confirmed, source, dest, complete,
             const y1 = e.from.y;
             const x2 = e.to.x;
             const y2 = e.to.y;
-            const bend = Math.max(18, (x2 - x1) / 2);
-            const midX = (x1 + x2) / 2;
+            const bend = Math.max(20, (x2 - x1) / 2);
             const color = legColor(e.mode);
+            const dirUp = y2 < y1; // curve exits upward or downward
+            const labelDy = dirUp ? -10 : 18;
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
             return (
               <g key={`e${i}`}>
                 <path
@@ -272,12 +293,12 @@ export default function HopTreeView({ levels, confirmed, source, dest, complete,
                   stroke={color}
                   strokeWidth={e.confirmed ? 4 : 2}
                   strokeDasharray={e.confirmed ? undefined : "5 6"}
-                  opacity={e.confirmed ? 1 : 0.4}
+                  opacity={e.confirmed ? 1 : 0.45}
                 />
                 {e.label && (
                   <text
                     x={midX}
-                    y={(y1 + y2) / 2 - 6}
+                    y={midY + labelDy}
                     textAnchor="middle"
                     className="edge-label"
                     fill={color}
@@ -293,7 +314,7 @@ export default function HopTreeView({ levels, confirmed, source, dest, complete,
           {/* nodes */}
           {nodes.map((n) => {
             const isChosenStop = n.kind === "stop";
-            const stroke = n.kind === "source" ? "#27ae60" : n.kind === "dest" ? "#eb5757" : legColor("bus");
+            const stroke = n.kind === "source" ? "#27ae60" : n.kind === "dest" ? "#eb5757" : "#6c5ce7";
             const onNodeClick = isChosenStop && n.stopLat != null
               ? () => {
                   const e = edges.find((x) => x.to.id === n.id);
@@ -308,12 +329,12 @@ export default function HopTreeView({ levels, confirmed, source, dest, complete,
                   width={NODE_W}
                   height={NODE_H}
                   rx={12}
-                  fill="var(--panel-strong)"
-                  stroke={n.kind === "source" || n.kind === "dest" ? stroke : "#6c5ce7"}
-                  strokeWidth={n.kind === "source" || n.kind === "dest" ? 3 : 2}
+                  fill={n.confirmed ? "rgba(108,92,231,0.12)" : "var(--panel-strong)"}
+                  stroke={n.kind === "source" || n.kind === "dest" ? stroke : n.confirmed ? "#6c5ce7" : "rgba(120,130,160,0.6)"}
+                  strokeWidth={n.kind === "source" || n.kind === "dest" ? 3 : n.confirmed ? 2 : 1.5}
                 />
                 <text x={n.x + 10} y={n.y - 4} className="node-label" dominantBaseline="middle">
-                  {n.label.length > 26 ? n.label.slice(0, 25) + "…" : n.label}
+                  {n.label.length > 28 ? n.label.slice(0, 27) + "…" : n.label}
                 </text>
                 {n.sub && (
                   <text x={n.x + 10} y={n.y + 14} className="node-sub" dominantBaseline="middle">

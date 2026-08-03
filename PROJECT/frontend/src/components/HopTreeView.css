@@ -25,3 +25,8 @@
 .hop-detail .icon-btn:hover { background: rgba(120, 130, 160, 0.15); }
 .hop-detail .stat { font-size: 13px; }
 .hop-detail .stat b { font-size: 15px; }
+
+.cost-strip { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; padding: 8px 12px; }
+.cost-strip .stat { font-size: 13px; }
+.cost-strip .stat b { font-size: 14px; }
+.cost-strip .small { font-size: 11px; }
