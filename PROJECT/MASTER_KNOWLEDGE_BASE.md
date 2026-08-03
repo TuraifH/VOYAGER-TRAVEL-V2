@@ -82,6 +82,8 @@
 31. Next Actions Master Plan — Docker (why), Google billing, live rides, PROMPT_8/9, QA loop
 32. The 2026-08-04 Session — Progressive Hop Builder FIX (no more looping) + bottom-sheet window + every API/option/segment/tool explained for the next session
 33. The News + Photo Fixes Session — news loop now started, photos now render (byte-proxy, no key leak) — every API/feature/segment/tool re-inventoried + what-next (Docker, integrations WHY, plans, data handling)
+34. IMPLEMENTATION_PLAN execution — news window fix, stop-selection preference, window split, radius circle, horizontal hop decision tree (2026-08-04B)
+35. The Frontend Motion + Glass Session — Search/Nearby panel polish (framer-motion), marker clustering, hover sync, glassmorphism windows (2026-08-04C)
 
 ---
 
@@ -798,6 +800,13 @@ userLoc, source, dest, setSource/setDest, swap, weather, places, selected, showD
 liveContext, news, journey (setJourney merges partials), flyTo. `scoreClass(score)`: null→yellow,
 ≥70 green, ≥50 yellow, ≥30 orange, else red. `scoreColor(score)` → CSS var. `useApp()` throws
 outside provider.
+**2026-08-04 (motion polish) additions:** `searchResults/setSearchResults` (results window),
+`hoveredPlaceId/setHoveredPlaceId` (card↔pin hover sync), `pinned/setPinned` (nearby base place),
+`searching/setSearching` + `searched/setSearched` (skeleton-in-place vs empty state),
+`radiusKm/setRadiusKm` (lifted from the slider so the results-window "widen radius" button can
+bump it), `nearbyBase/setNearbyBase` (`{lat,lng,radiusM}` — live radius circle), plus
+`clearTransient()` (resets places/searchResults/pinned/selected/showDiscovery/prices/fuel/
+nearbyBase/ridePath/flyTo/flowOpen/journey — never source/dest/userLoc/mode).
 
 ### 14.2 `services/api.ts` — typed axios client
 `http` instance: `baseURL = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api"`,
@@ -814,6 +823,7 @@ Methods (exact paths):
 - `segmentNext(journey, chosenLegs, groupSize, budget)` → POST `/routes/segment-next`
 - `routeContext(src, dst, groupSize, budget, place=null)` → POST `/langgraph/route-context`
 - `liveTrains(from, to)` → GET `/routes/live-trains`
+- `driveRoute(origin, dest)` → POST `/routes/drive` (GraphHopper car geometry; used by AToB drive + ride-card path)
 
 ### 14.3 `types/index.ts` — all contracts
 `Coord=[number,number]`, `ScoreClass`, `LatLng`, `WeatherNow`, `NewsItem`, `PlaceResult`,
@@ -828,9 +838,15 @@ stores via setWeather. `main.tsx` mounts StrictMode + App with `index.css`.
 
 ### 14.5 `pages/MainPage.tsx` + `.css` — 3-tab shell
 Tabs: Search / A→B / Trip (bottom pill nav, active = primary bg + glow). Layout: HeaderBar on top;
-`.app-body` = sidebar (`380px`, `.glass`) + map-wrap (flex:1) + DiscoveryPanel overlay. Geolocation
-on mount (6s timeout, fallback Bengaluru). Mobile ≤768px: body becomes column, sidebar 42vh, map
-45vh, icon-only tabs. Exports helper `flyToPoint(map, point, zoom=15)`.
+`.app-body` = two **floating glass windows** over the map: `.input-window` (top-left, 360px,
+`z-index:900`) + `.results-window` (below it, `z-index:900`) — both `clearTransient()` on bottom-tab
+switch. Geolocation on mount (6s timeout, fallback Bengaluru). Mobile ≤768px: windows full-width,
+input 30% max-height, results below, icon-only tabs. Exports helper `flyToPoint(map, point, zoom=15)`.
+**Glassmorphism (2026-08-04):** windows are translucent — dark `rgba(15,20,35,0.72)` / light
+`rgba(255,255,255,0.68)`, `backdrop-filter: blur(20px) saturate(1.4)` + `-webkit-` prefix, top-edge
+light highlight `inset 0 1px 0 rgba(255,255,255,0.08)`, outer `var(--shadow)`, thin scrollbars;
+`@supports not (backdrop-filter…)` fallback = 0.94-opacity fill. Static blur only (never animated).
+Blur is real because `.map-wrap` (`z-index:0`) is behind the windows (`z-index:900`).
 
 ### 14.6 `components/HeaderBar.tsx` + `.css`
 Brand, live clock, weather chip (temp + condition, `rain soon` badge when rain_next_hour), dark
@@ -856,6 +872,19 @@ toggle, location.
 - `Pins` — numbered places hidden during active journey; source = green pin, dest = red pin, star
   for selected; numbered pins colored by `business_status==="CLOSED_PERMANENTLY" ? red :
   scoreClass(rating*20)`; news pins only if `geo`; JourneyPosition = blue CircleMarker (radius 7).
+- **Nearby pins drop-in + hover sync (2026-08-04):** numbered pins are wrapped in
+  `<div class="pin-wrap" style="animation-delay: min(i*60,540)ms">` for a staggered drop
+  (`pin-drop` keyframes: -18px + scale 0.4 → overshoot → settle, `cubic-bezier(0.22,1,0.36,1)`).
+  Hover sync card↔pin uses a `pinEls` ref Map (place_id → `marker.getElement()`); an effect on
+  `hoveredPlaceId` toggles `.hot` (scale 1.3 + glow ring) on `.marker-num` — **direct DOM classList,
+  never `setIcon`** (setIcon would recreate the element and replay the drop animation). Marker
+  `mouseover/mouseout` → `setHoveredPlaceId(p.place_id)`.
+- **Clustering (2026-08-04):** numbered pins render inside `MarkerClusterGroup` (react-leaflet-cluster
+  4.x; deps: @react-leaflet/core ^3, react-leaflet ^5, React 19 — v4 is the rl5-compatible line).
+  Props: `chunkedLoading, maxClusterRadius:48, showCoverageOnHover:false,
+  spiderfyDistanceMultiplier:1.6` + `iconCreateFunction={clusterIcon}` → custom divIcon bubble:
+  count <10 purple, <50 deep purple, ≥50 teal (`.marker-cluster-*` overrides in `index.css`,
+  dark-theme styled, hover scale 1.15). Imports both MarkerCluster.css + MarkerCluster.Default.css.
 - `fitBounds` on journey segments + ridePath (padding 40), and every point is filtered through the
   Bengaluru-box guard so a single bad point cannot zoom the map out to "nowhere".
 - OSM tiles. Hover = CSS only. Hop-card hover/select pans the map (in SegmentFlowView, correct
@@ -869,6 +898,33 @@ place is pinned, 19 category chips in scrollable wrap — default "Restaurant", 
 name, primary_type, status pill (open/closed/unknown), address, ★ rating (count), distance km,
 `badge live/est` for open/closed, **Details** + **Navigate** buttons. Click → pin + flyTo; Details
 → enrich + DiscoveryPanel; Navigate → setDest + mode atob.
+
+**2026-08-04 motion/motion-state rewrite (all framer-motion, easing `cubic-bezier(0.22,1,0.36,1)`):**
+- **Segmented tabs:** active pill = `motion.span layoutId="seg-pill"` (spring 420/34) so the bg
+  slides between tabs; views swap via `AnimatePresence mode="wait"` cross-fade + 8px slide +
+  scale depth (0.98 both ways). Whole panel wrapped in `MotionConfig reducedMotion="user"`.
+- **Chips (19):** multi-select `Set<string>`; per-chip Material icon (`CATEGORY_ICONS` map) +
+  animated ✓ checkmark; spring pop keyframes `[0.9, 1.08, 1]`; **ripple burst at the tap point**
+  (`spawnRipple(el, clientX, clientY)` — absolute `<span class="chip-ripple">`, 300ms, removed);
+  hover lift 2px + press 0.95; first-mount stagger 50ms × i (`chipsAnimatedRef` — once only).
+  Count line below ("3 selected" / "Pick at least one category").
+- **Radius slider (context-lifted `radiusKm`):** snap ticks at 0.5/1/2/5/10; thumb scales while
+  dragging + floating tooltip pill ("2 km"); filled track = primary gradient; **rAF-throttled
+  `setNearbyBase`** (`rafRef`) so the map `<Circle>` grows/shrinks live during drag.
+- **CTA:** click → inline spinner "Finding…" → checkmark "Found" (1.5s) → idle; press scale 0.97;
+  hover glow; **idle pulse** after 8s on the Nearby tab (`idlePulse`, once per session —
+  `interactedRef` stops it forever after first click).
+- **Search icon morph:** search → spinner (in flight) → "X" (text present), `AnimatePresence
+  mode="wait"` per glyph. Suggestions rows stagger 35ms × i, ArrowUp/Down + Enter + Escape with
+  `aria-activedescendant`, matching substring in `<mark>`.
+- **Results window (shared context):** while `searching` → 3 shimmer skeleton cards in place
+  (`aria-busy`); zero results + `searched` → empty state (`search_off` icon, "No places found at
+  X km.", **"Widen search radius"** → `setRadiusKm(+3 capped)` + `CustomEvent("voyager:rerun-nearby")`
+  that `SearchInput` listens for (switches to Nearby tab if needed, then re-runs via
+  `runNearbyRef`). `PlaceCard`: staggered entrance 60ms × i; **rating CountUp** (`animate(0, v,
+  {duration:0.4, delay})`); teal `badge.info` distance (near_me icon) slides in after the card;
+  open/closed = `badge.info`/`badge.warn`. Card `onHoverStart/End` + `onFocus/Blur` set
+  `hoveredPlaceId` (pin sync, §14.7).
 
 ### 14.9 `components/DiscoveryPanel.tsx` + `.css` — right-side glass panel
 Shows (when showDiscovery): hero photo (`/api/photo?name=…`, onError hides), header + close,
@@ -2733,3 +2789,70 @@ tree** (`HopTreeView`) replacing the vertical option cards. QA gate: `pytest tes
 PROMPT_9). Before every commit: `git pull`, `pytest tests/ -q`, `npx tsc --noEmit`, then push. This
 file is fully self-contained — no old
 folder is needed.*
+
+---
+
+## 35. THE 2026-08-04C SESSION — FRONTEND MOTION + GLASS POLISH (Search/Nearby panel)
+
+> Executed 2026-08-04. Phase 1 + Phase 2 of the search-panel interactivity/polish spec, then the
+> glassmorphism pass. Gate: `pytest tests/ -q` = **104 passed**, `npx tsc --noEmit` = **0 errors**,
+> `npm run lint` = no new warnings, live smoke + headless-Chrome render Verified.
+
+### 35.1 New dependencies (owner-approved installs)
+- **framer-motion** (was NOT previously installed despite earlier assumptions) — all panel motion.
+- **react-leaflet-cluster 4.x** (+ leaflet.markercluster) — v4 is the react-leaflet ^5 / React 19
+  compatible line. Both installs: 0 vulnerabilities.
+
+### 35.2 Phase 1 — core interactivity (all in `SearchPanel.tsx/.css`)
+- Segmented tab control: `layoutId="seg-pill"` sliding pill + `AnimatePresence` cross-fade.
+- Category chips: multi-select, spring pop `[0.9, 1.08, 1]`, count line, animated ✓.
+- Radius slider: gradient track, snap ticks, floating tooltip while dragging.
+- CTA: inline spinner → checkmark morph, press scale 0.97, hover glow.
+- Search input: icon morph search→spinner→X, debounced keyboard-navigable suggestions with `<mark>`.
+- Results: staggered cards, `hoveredPlaceId` card↔pin hover sync.
+- Map pins: staggered `pin-wrap` drop-in; `.hot` class toggled **directly on the DOM element** via a
+  `pinEls` ref Map (NOT `setIcon` — setIcon replays the drop animation). Approved by owner via diff
+  preview before touching MapView.
+- `AppContext` gained `hoveredPlaceId/setHoveredPlaceId` (interface + state + value + deps).
+
+### 35.3 Phase 2 — depth, state design, clustering
+- **Glass windows** (`MainPage.css`): translucent `rgba(15,20,35,0.72)` dark / white 0.68 light,
+  `backdrop-filter: blur(20px) saturate(1.4)` + `-webkit-`, top-edge inset highlight
+  `rgba(255,255,255,0.08)` (top only), `@supports not (backdrop-filter…)` → 0.94 fallback. Static
+  blur only (never animated). Blur is real: windows `z-index:900` over `.map-wrap` `z-index:0`.
+- **Idle/ambient:** CTA breathing glow after 8s idle, once per session (`interactedRef`); chips
+  stagger in on first mount only (`chipsAnimatedRef`).
+- **Chip ripple** at exact tap point (`spawnRipple(el, clientX, clientY)`, 300ms, GC'd) + per-chip
+  Material icon (`CATEGORY_ICONS`).
+- **Live radius circle:** slider drag pushes `nearbyBase` at rAF rate (`rafRef`) → `<Circle>` on map
+  grows/shrinks in real time.
+- **Results state:** `searching` → skeleton cards replace list in place (results window);
+  `searched` + empty → empty state with **"Widen search radius"** button
+  (`setRadiusKm(+3)` + `CustomEvent("voyager:rerun-nearby")`, listened to by `SearchInput`).
+  Rating **CountUp** (framer `animate`, 400ms); teal `badge.info` distance badge slides in.
+- **Color hierarchy:** purple = selection/primary only; teal `--secondary` = status/info
+  (distance, "Open now", cluster ≥50); amber `badge.warn` = closed/warnings.
+- **Tab depth:** view swap scales 0.98 both ways.
+- **Clustering (§14.7):** `MarkerClusterGroup` (maxClusterRadius 48, chunkedLoading, spiderfy),
+  custom tiered count bubbles (<10 purple / <50 deep purple / ≥50 teal), dark CSS overrides.
+  User-location pulsing ring already existed (`marker-user::after`).
+
+### 35.4 One bug found + fixed (crash)
+- `ReferenceError: Cannot access 'switchTab' before initialization` (white screen): the
+  `voyager:rerun-nearby` listener's deps array referenced `switchTab` before its `useCallback`
+  declaration (TDZ). Fixed by declaring `switchTab` (useCallback) and `runNearbyRef` BEFORE the
+  listener effect. Verified with headless Chrome (`--dump-dom` + `--enable-logging=stderr`) — zero
+  console errors, full app renders (search-panel, seg-pill, leaflet nodes).
+
+### 35.5 QA (this session)
+- `npx tsc --noEmit` 0 errors · `npm run lint` no new warnings · all touched modules live-compile
+  on Vite :3000 · headless Chrome render + console check clean · screenshots saved at
+  `/tmp/opencode/panel-before.png` / `panel-after.png` (glass pass).
+
+*Session 2026-08-04C complete. Search/Nearby panel is now fully animated (framer-motion, one easing
+`cubic-bezier(0.22,1,0.36,1)`, springs for pops, transform/opacity only, `prefers-reduced-motion`
+fallbacks, visible focus rings), results have skeleton/empty/count-up states, nearby pins drop in
+staggered, hover-sync with cards, and cluster at 5–10km; both floating windows are true translucent
+glass over the map. Frontend files touched: `SearchPanel.tsx/.css`, `MapView.tsx`, `AppContext.tsx`,
+`MainPage.css`, `index.css`, `package.json` (+framer-motion, +react-leaflet-cluster). Docs: this
+§35 + PROMPT_6 §2/§4/§6/§12/§15 updated.*

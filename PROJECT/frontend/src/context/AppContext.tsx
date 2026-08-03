@@ -38,8 +38,16 @@ interface AppState {
   setPlaces: (p: PlaceResult[]) => void;
   searchResults: PlaceResult[];
   setSearchResults: (p: PlaceResult[]) => void;
+  hoveredPlaceId: string | null;
+  setHoveredPlaceId: (id: string | null) => void;
   pinned: PlaceResult | null;
   setPinned: (p: PlaceResult | null) => void;
+  searching: boolean;
+  setSearching: (v: boolean) => void;
+  searched: boolean;
+  setSearched: (v: boolean) => void;
+  radiusKm: number;
+  setRadiusKm: (v: number) => void;
   selected: PlaceDetails | null;
   setSelected: (p: PlaceDetails | null) => void;
   showDiscovery: boolean;
@@ -85,7 +93,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [weather, setWeather] = useState<WeatherNow | null>(null);
   const [places, setPlaces] = useState<PlaceResult[]>([]);
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [hoveredPlaceId, setHoveredPlaceId] = useState<string | null>(null);
   const [pinned, setPinned] = useState<PlaceResult | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [radiusKm, setRadiusKm] = useState(2);
   const [selected, setSelected] = useState<PlaceDetails | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [prices, setPrices] = useState<RidePrice[]>([]);
@@ -140,7 +152,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     source, dest, setSource, setDest, swap,
     weather, setWeather,
     places, setPlaces,
-    searchResults, setSearchResults, pinned, setPinned,
+    searchResults, setSearchResults, hoveredPlaceId, setHoveredPlaceId,
+    pinned, setPinned,
+    searching, setSearching, searched, setSearched, radiusKm, setRadiusKm,
     selected, setSelected, showDiscovery, setShowDiscovery,
     prices, setPrices, fuel, setFuel,
     nearbyBase, setNearbyBase, clearTransient,
@@ -150,8 +164,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     news, setNews,
     journey, setJourney,
     flyTo, setFlyTo,
-  }), [mode, dark, userLoc, source, dest, weather, places, searchResults, pinned, selected, showDiscovery,
-      prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
+  }), [mode, dark, userLoc, source, dest, weather, places, searchResults, hoveredPlaceId, pinned, searching, searched, radiusKm,
+      selected, showDiscovery, prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
