@@ -101,6 +101,13 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
 
   const totalTime = useMemo(() => confirmed.reduce((a, c) => a + (c.durationMin ?? 0), 0), [confirmed]);
   const totalFare = useMemo(() => confirmed.reduce((a, c) => a + (c.fare ?? 0), 0), [confirmed]);
+  const perPersonFare = useMemo(() => confirmed.reduce((a, c) => a + (c.perPersonFare ?? c.fare ?? 0), 0), [confirmed]);
+  const groupFare = gs * perPersonFare;
+  const fareLabel = perPersonFare > 0
+    ? (gs > 1 ? `₹${get(perPersonFare)}/person · ₹${get(groupFare)} total` : `₹${get(perPersonFare)}`)
+    : null;
+
+  function get(v: number) { return Math.round(v * 100) / 100; }
 
   return (
     <div className="flow-view">
@@ -113,6 +120,24 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
           </span>
         ))}
       </div>
+
+      {confirmed.length > 0 && (
+        <div className="cost-strip glass">
+          <span className="stat">
+            <b>{totalTime}</b> min
+            <span className="muted small"> (time)</span>
+          </span>
+          {fareLabel ? (
+            <span className="stat"><b>{fareLabel}</b></span>
+          ) : (
+            <span className="stat muted small">cost unavailable</span>
+          )}
+          <span className="stat muted small"><b>{confirmed.length}</b> leg{confirmed.length > 1 ? "s" : ""}</span>
+          {perPersonFare > 0 && gs > 1 && (
+            <span className="stat">×<b>{gs}</b> travellers</span>
+          )}
+        </div>
+      )}
 
       {warnings.length > 0 && (
         <div className="warn-strip glass">
