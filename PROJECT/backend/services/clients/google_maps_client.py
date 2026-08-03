@@ -74,6 +74,7 @@ class GoogleMapsClient:
         self._center = center
         self._timeout = timeout_s
         self._cache: dict[str, tuple[float, object]] = {}
+        self._photo_cache: dict[str, tuple[bytes, str]] = {}  # photo_name -> (bytes, content_type)
         self._google_dead_until = 0.0  # set after 401/403 so fallback is instant
         self._lock = None  # single-threaded FastAPI sync handlers
         if not self._key:
@@ -109,6 +110,32 @@ class GoogleMapsClient:
             return None
         return (f"https://places.googleapis.com/v1/{photo_name}/media"
                 f"?maxWidthPx={max_width}&key={self._key}")
+
+    def fetch_photo(self, photo_name: str | None, max_width: int = 400) -> tuple[bytes, str] | None:
+        """Fetch real photo bytes server-side so the API key never leaves the backend.
+
+        Returns (image_bytes, content_type) or None on any failure — the caller
+        renders "no photo" rather than a broken/leaky redirect.
+        """
+        if not photo_name:
+            return None
+        if not self._key:
+            return None
+        hit = self._photo_cache.get(photo_name)
+        if hit is not None:
+            return hit
+        url = f"{_PLACES_BASE}/{photo_name}/media?maxWidthPx={max_width}&key={self._key}"
+        try:
+            resp = requests.get(url, timeout=self._timeout)
+            resp.raise_for_status()
+            result = (resp.content, resp.headers.get("content-type", "image/jpeg"))
+            if len(self._photo_cache) > 500:  # bound memory
+                self._photo_cache.clear()
+            self._photo_cache[photo_name] = result
+            return result
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("[maps] photo fetch(%s) failed: %s", photo_name, exc)
+            return None
 
     # --------------------------------------------------------------- geocode
     def geocode(self, query: str) -> dict | None:

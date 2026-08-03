@@ -17,8 +17,7 @@ layer (PROMPT_5).
 """
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Response
 
 from backend.services import app_state
 from backend.services.data_schema import Place
@@ -227,13 +226,24 @@ def search_weather(lat: float, lng: float):
 
 @search_router.get("/search/photo")
 def search_photo(name: str, max_width: int = 400):
-    """Proxy a real Google Places photo (keeps the API key server-side)."""
+    """Proxy a real Google Places photo (keeps the API key server-side).
+
+    Fetches the image bytes backend-side and streams them to the browser, so the
+    key never appears in the client's network traffic.
+    """
     svc = app_state.get_search()
     photo_name = name if name.startswith("places/") else f"places/{name}"
-    url = svc.maps.place_photo_url("", photo_name, max_width=max_width)
-    if not url:
-        return {"error": "no photo"}
-    return RedirectResponse(url)
+    img = svc.maps.fetch_photo(photo_name, max_width=max_width)
+    if not img:
+        return Response(status_code=404)
+    content, content_type = img
+    return Response(content=content, media_type=content_type)
+
+
+@search_router.get("/photo")
+def photo_alias(name: str, max_width: int = 400):
+    """Alias the DiscoveryPanel already calls (/api/photo)."""
+    return search_photo(name, max_width=max_width)
 
 
 @search_router.get("/routes/live-trains")

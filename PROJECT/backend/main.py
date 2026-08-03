@@ -17,6 +17,9 @@ from backend.services import app_state
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     app_state.ensure_loaded()
+    # News is populated by a background refresh loop (scrape/classify/tag).
+    # It was never started — without this the /api/search/news store stays empty.
+    app_state.get_news().start()
     yield
 
 

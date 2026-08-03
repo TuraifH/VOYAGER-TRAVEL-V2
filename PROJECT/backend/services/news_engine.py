@@ -134,10 +134,27 @@ class NewsEngine:
         return len(self._items)
 
     # ---------------------------------------------------------------- sources
+    def _fetch(self, url: str, timeout: float = 10.0,
+               params: dict | None = None) -> requests.Response | None:
+        """Fetch via the proxy when configured, else a plain direct request.
+
+        Keeps ProxyManager's own "no-creds => None" contract intact (tested) while
+        letting the news engine still work out-of-the-box when no DataImpulse
+        credentials are set. Data is always real — never fabricated.
+        """
+        if self._proxy.available:
+            return self._proxy.get(url, timeout=timeout, params=params or {})
+        try:
+            return requests.get(
+                url, timeout=timeout, params=params,
+                headers={"User-Agent": "Mozilla/5.0 (VOYAGER news engine)"})
+        except requests.RequestException:
+            return None
+
     def _scrape_reddit(self) -> list[dict]:
         out = []
         url = "https://www.reddit.com/r/bangalore/new.json?limit=25"
-        resp = self._proxy.get(url, timeout=10)
+        resp = self._fetch(url, timeout=10)
         if resp is None:
             return out
         try:
@@ -169,7 +186,7 @@ class NewsEngine:
 
     def _ddg_news(self, query: str) -> list[dict]:
         try:
-            resp = self._proxy.get(
+            resp = self._fetch(
                 "https://html.duckduckgo.com/html/",
                 params={"q": query, "ia": "news"},
                 timeout=10)

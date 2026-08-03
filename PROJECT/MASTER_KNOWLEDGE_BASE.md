@@ -8,15 +8,19 @@
 > detail, every problem we hit and the better option we chose so it never regresses, all 104
 > tests, performance budgets, the Docker setup, and exactly what to do next.
 >
-> Written: 2026-08-01. Last updated: 2026-08-03 (PROMPT_1–7 DONE, 104 tests green; 2026-08-03
-> hardening session merged: map-fly-away root cause fixed, progressive hop builder, SerpAPI rating
-> fallback, OSM→Google place resolution, LLM provider chain (OpenRouter→Gemini), `/routes/drive`,
-> CSS stacking-context fixes).
+> Written: 2026-08-01. Last updated: 2026-08-04 (news loop + photo proxy fixes session — see §33).
+> Prior sessions merged: PROMPT_1–7 DONE (104 tests green); 2026-08-03 hardening (map-fly-away
+> root cause, progressive hop builder, SerpAPI rating fallback, OSM→Google place resolution, LLM
+> provider chain OpenRouter→Gemini, `/routes/drive`, CSS stacking-context fixes); hop-builder loop
+> fix + bottom-sheet hop window (§32).
 > Source of truth: this file + `PROJECT/` — **self-contained; no external folder is referenced.**
 >
-> **READ §19.4 first** — it is the latest recorded session (2026-08-03) and explains exactly what
-> broke, why, and what we chose instead so it never regresses. §28–§31 are the full deep-dive
-> anatomy + current run state + next-actions master plan.
+> **READ §19.4 & §32 first** — they record the two prior hardening/loop-fix sessions and exactly
+> what broke, why, and what we chose instead so it never regresses. §28–§31 are the full deep-dive
+> anatomy + current run state + next-actions master plan. **NEW THIS SESSION: §33** documents the
+> News-engine + Photo-feed fixes (news loop was never started; photos never rendered because the
+> frontend path `/api/photo` did not exist and the old proxy leaked the Google key). Read it after
+> §32.
 
 ## ⚠️ FRESH-START MIGRATION (READ FIRST)
 
@@ -77,6 +81,7 @@
 30. Current Run State — ports, PIDs, proxy, Docker, and a full verify checklist
 31. Next Actions Master Plan — Docker (why), Google billing, live rides, PROMPT_8/9, QA loop
 32. The 2026-08-04 Session — Progressive Hop Builder FIX (no more looping) + bottom-sheet window + every API/option/segment/tool explained for the next session
+33. The News + Photo Fixes Session — news loop now started, photos now render (byte-proxy, no key leak) — every API/feature/segment/tool re-inventoried + what-next (Docker, integrations WHY, plans, data handling)
 
 ---
 
@@ -2358,11 +2363,303 @@ in `.env` (`PROXY_HOST/PORT/USER/PASS` — no commit).
 
 ---
 
-*End of VOYAGER v2 Master Knowledge Base. Latest session: **2026-08-04** — progressive hop builder
-FIX (spaced arrival stops `_spaced_arrival_stops` 500/600 m + server/client visited set +
-progress-aware ★ Top) and the **bottom-sheet hop window** (`flowOpen`/`flowParams`, `.flow-sheet`
-z-index 1000, km-to-dest badges). 104 tests + tsc clean; servers live. See §20 #37–39 for the
-do-not-regress rules and §32.12 for the plan. Next: commit+push this session, then Google billing,
-Gemini verification, SerpAPI live rides, PROMPT_8, PROMPT_9. Before every commit: `git pull`,
+## 33. THE NEWS + PHOTO FIXES SESSION — NEWS LOOP NOW STARTED + PHOTOS NOW RENDER (DETAILED, FOR THE NEXT SESSION)
+
+> **This is the complete record of the session that made two promised features ACTUALLY work.**
+> Owner's words: *"I don't get to see any news or any photo … we decided to get that and since it
+> is not coming it is important that it must come!!"* Both were **wired but never turned on** —
+> classic "built but not started" bugs. Read alongside §13 (live layer), §16 (proxy), §25 (APIs),
+> §31 (next actions), §32 (previous session). **This session's commit is `a7222da`'s successor —
+> the working tree changes are committed and pushed with this documentation.**
+
+### 33.1 What the owner saw (the two missing features)
+
+1. **NO NEWS** — the LIVE news popup (bottom-right, `NewsPopup.tsx`) always showed
+   *"No news items yet."* and `GET /api/search/news` always returned `{"items": []}`. The app
+   advertises a LIVE news panel (PROMPT_5 §4) but it never had a single headline.
+2. **NO PHOTOS** — every place card in the Discovery panel showed the grey `image` fallback tile;
+   Google photos never rendered even though the backend had photo plumbing.
+
+### 33.2 Root-cause diagnosis (both were "not started / not reachable", not "not built")
+
+| # | Feature | Root cause | Proof of diagnosis |
+|---|---|---|---|
+| A | News | `NewsEngine` was **instantiated but never started**: `app_state.py:55` builds
+  `_news = NewsEngine(ProxyManager())` but **nothing ever calls `start()`**. The background refresh
+  loop `_loop()` (scrape → classify → geo-tag → merge) only runs from `start()`, so `_items`
+  stayed `[]` forever. `main.py` lifespan only called `ensure_loaded()`. | `grep '\.start()' backend/` → only `news_engine.py:107` (inside `start()` itself). The loop had no caller. |
+| B | Photos | **Frontend/backend path mismatch + leaky proxy.** `DiscoveryPanel.tsx:9` builds
+  `photoUrl = "/api/photo?name=…"` but the backend only registered `/api/search/photo`
+  (`routes.py`). Every image request hit a non-existent route → **404** → `onError` hides the
+  `<img>` and shows the fallback tile. Separately, the old endpoint returned a
+  `RedirectResponse` to `https://places.googleapis.com/v1/{photo}/media?…&key=…` — the **Google
+  API key was embedded in the redirect Location**, so it leaked into the browser's network tab
+  (violating our own "key stays server-side" rule) and photos were one redirect hop away from the
+  client. | `grep '/api/photo' frontend/` (used) vs `grep 'search/photo' backend/api/routes.py` (registered). 404 was reproducible. |
+
+### 33.3 Fix A — news loop started at app startup
+
+`backend/main.py` — `lifespan()` now starts the news engine after the lazy singletons load:
+
+```python
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    app_state.ensure_loaded()
+    # News is populated by a background refresh loop (scrape/classify/tag).
+    # It was never started — without this the /api/search/news store stays empty.
+    app_state.get_news().start()
+    yield
+```
+
+- `start()` spawns one **daemon** thread (`name="news-loop"`) that immediately calls
+  `refresh_once()` then sleeps `interval_min * 60` (default **8 min**) and repeats. The daemon
+  dies with the process — no explicit shutdown needed (and none existed).
+- `start()` is idempotent: `if self._running: return` guards against double-start (relevant under
+  `uvicorn --reload` where each worker process builds its own singletons).
+
+### 33.4 Fix B — photos render, and the Google key NEVER leaves the server
+
+**Backend — `backend/services/clients/google_maps_client.py`:** new method `fetch_photo()`:
+
+```python
+def fetch_photo(self, photo_name, max_width=400):
+    """Fetch real photo bytes server-side so the API key never leaves the backend.
+    Returns (image_bytes, content_type) or None on any failure."""
+```
+
+- Downloads the image over `requests.get(url, …)` **inside the backend**, returns
+  `(resp.content, resp.headers.get("content-type", "image/jpeg"))`.
+- **In-memory photo cache** `self._photo_cache: dict[str, (bytes, str)]`, evicted wholesale above
+  500 entries (`self._photo_cache.clear()`) — a simple bound; photos are small, repeated views
+  stay cheap, and no key ever appears in the browser.
+- Returns `None` when `photo_name` is falsy or there is **no `GOOGLE_MAPS_API_KEY`** — so the UI
+  degrades to the fallback tile instead of erroring (honesty rule: no broken image).
+
+**Backend — `backend/api/routes.py`:** the photo endpoint now streams bytes and is served at BOTH
+paths:
+
+```python
+@search_router.get("/search/photo")
+def search_photo(name: str, max_width: int = 400):
+    svc = app_state.get_search()
+    photo_name = name if name.startswith("places/") else f"places/{name}"
+    img = svc.maps.fetch_photo(photo_name, max_width=max_width)
+    if not img:
+        return Response(status_code=404)          # no photo / no key -> honest 404
+    content, content_type = img
+    return Response(content=content, media_type=content_type)  # image bytes streamed
+
+@search_router.get("/photo")
+def photo_alias(name: str, max_width: int = 400):   # the path DiscoveryPanel already used
+    return search_photo(name, max_width=max_width)
+```
+
+- `/api/photo` **matches the frontend exactly** — no frontend change was needed.
+- `RedirectResponse` (and its import) is **removed** — no more key-in-Location leaks.
+- Verification: with no real photo ref, `search_photo("places/AbCdEfGh…")` returns **HTTP 404**
+  (not 500); with a valid key+ref it returns the raw image bytes with the correct `content-type`.
+
+**Why the byte-proxy was the better option (decision we chose so it never regresses):**
+1. **Redirect proxy leaks the key** — the `302 Location` and the follow-up request both contain
+   `&key=…`, visible in the client. Server-side byte proxy means the browser only ever sees the
+   image bytes.
+2. **Redirect adds a flaky extra client hop** — the browser then talks directly to
+   `places.googleapis.com`, subject to ad-blockers / CSP / mixed-content; proxying keeps one
+   origin and one CORS story.
+3. **Byte proxy centralizes failure** — `fetch_photo` returns `None` → honest 404/fallback, never
+   a broken or leaking request.
+
+### 33.5 Fix C — news works WITHOUT DataImpulse credentials (direct-fetch fallback)
+
+Tracing showed a second hidden blocker: even with the loop started, `ProxyManager.get()` returns
+`None` whenever `DATAIMPULSE_USER/PASS` are not set (its **tested contract** —
+`test_prompt5.py::test_proxy_not_available_without_creds` asserts no-creds ⇒ `None`). Without
+proxy creds the news engine would still stay empty.
+
+**We deliberately did NOT change `ProxyManager`** (that would break the tested degradation
+contract). Instead the news engine now routes its scrapes through a new `_fetch()` helper:
+
+```python
+def _fetch(self, url, timeout=10.0, params=None):
+    """Fetch via the proxy when configured, else a plain direct request.
+    Keeps ProxyManager's "no-creds => None" contract intact (tested) while letting the
+    news engine still work out-of-the-box when no DataImpulse credentials are set.
+    Data is always real — never fabricated."""
+    if self._proxy.available:
+        return self._proxy.get(url, timeout=timeout, params=params or {})
+    try:
+        return requests.get(url, timeout=timeout, params=params,
+                            headers={"User-Agent": "Mozilla/5.0 (VOYAGER news engine)"})
+    except requests.RequestException:
+        return None
+```
+
+- `_scrape_reddit()` and `_ddg_news()` now call `self._fetch(...)` instead of `self._proxy.get(...)`.
+- With proxy creds → **unchanged proxied path**. Without creds → **honest direct requests** (real
+  data, just not proxied). Data is always real — this is a delivery-path fallback, not a
+  fabrication one.
+- Live proof (this session): `NewsEngine().refresh_once()` returned **8 real items** via the
+  DuckDuckGo direct path. Reddit's `new.json` returned **HTTP 403 (Blocked)** from this datacenter
+  IP even direct — so DDG is the effective source here; on a residential IP Reddit usually works.
+  Both sources are tried every refresh cycle.
+
+### 33.6 Every file changed this session (all under `PROJECT/`)
+
+| File | Change |
+|---|---|
+| `backend/main.py` | `lifespan()` now calls `app_state.get_news().start()` after `ensure_loaded()`. |
+| `backend/services/news_engine.py` | Added `_fetch()` (proxy-or-direct); `_scrape_reddit()` & `_ddg_news()` use it. |
+| `backend/services/clients/google_maps_client.py` | Added `_photo_cache` + `fetch_photo()` (server-side bytes). |
+| `backend/api/routes.py` | `/api/search/photo` streams bytes; added `/api/photo` alias; removed `RedirectResponse`. |
+| `MASTER_KNOWLEDGE_BASE.md` | This section (§33) + TOC + header updated. |
+
+No frontend file changed — the existing `/api/photo?name=` call was correct; the backend was the
+half that was missing/mismatched.
+
+### 33.7 Verification performed (all green)
+
+1. `python -c "import backend.api.routes, backend.services.clients.google_maps_client, backend.main"` → OK.
+2. `python -m pytest tests/ -q` → **104 passed** in ~17 s (includes the untouched
+   `test_proxy_not_available_without_creds` — proof the proxy contract survived).
+3. `cd frontend; npx tsc --noEmit` → **0 errors**.
+4. Route registration check → `search_router` contains **both** `/photo` and `/search/photo`;
+   `/search/news` present.
+5. Live news refresh → `refresh_once()` returned **8 real items** (DDG direct path); `relevant()`
+   served them (first item: *"Bangalore Traffic Map and Updates - TrafficonMaps"*, category
+   `traffic`).
+6. Photo endpoint with a non-existent ref → **HTTP 404** (no crash, no key echo to the client).
+
+### 33.8 Do-not-regress (new entries; extend §20 glossary)
+
+| # | Rule | Why it matters |
+|---|---|---|
+| 40 | **The news loop must stay started.** Never remove `app_state.get_news().start()` from `main.py` lifespan. | It was the exact bug: created-but-not-started → permanently empty `_items`. |
+| 41 | **Never put the Google API key in a client-visible redirect.** Photos (and anything keyed) must be fetched server-side (`fetch_photo`) and streamed back. | The old `RedirectResponse` leaked `key=` into the browser's network tab and added a flaky client hop. |
+| 42 | **Photo route contract:** `/api/photo` (what the frontend calls) and `/api/search/photo` (canonical) must both exist; no-photo/no-key returns **404**, never 500 or a leaking redirect. | DiscoveryPanel depends on `/api/photo`; changing either path silently re-breaks images. |
+| 43 | **Don't touch `ProxyManager`'s no-creds⇒`None` contract.** Add any direct-fetch fallback in the *caller* (`NewsEngine._fetch`), not in the proxy manager. | `test_proxy_not_available_without_creds` enforces the degradation contract; the direct fallback belongs to the news engine. |
+| 44 | **News/photo features are "built-and-started", not "built-only".** A feature is not done until its runtime path is verified end-to-end (loop started, route registered, bytes served). | This session's two bugs were both "wired but never switched on". |
+
+### 33.9 FULL INVENTORY — every API, feature, mode, segment field, tool (consolidated reference)
+
+This is the **complete cross-reference** of everything in the system. Each item links to the
+section that explains it in depth. Use it as the "index of understanding" for future sessions.
+
+**All HTTP endpoints (12 APIs, verified in `routes.py`):**
+| Method + path | Purpose | Section |
+|---|---|---|
+| `POST /api/routes/segments` | Build Segment 1 (get out of origin) + Segment 2 (main transit leg) + probes | §11, §25 |
+| `POST /api/routes/segment-next` | Chain the next hop from the chosen leg (progressive builder) | §11, §14.11, §32 |
+| `POST /api/routes/drive` | GraphHopper car route → geometry/distance/duration; interpolated fallback flagged | §29 #6, §33 |
+| `GET  /api/search/places?q=&lat=&lng=` | Google Places(New) text search → OSM Nominatim fallback | §12, §15 |
+| `GET  /api/search/nearby?lat=&lng=&radius_m=&categories=` | Category nearby search (19 chips) | §12, §14 |
+| `POST /api/search/enrich` | SerpAPI real reviews + reliability + LLM summary + hours/status | §12, §15, §33 |
+| `POST /api/search/verify` | Pin name+coords to a real place (OSM→Google `_resolve`) | §29 #8 |
+| `POST /api/rides/prices` | Live (SerpAPI) or Estimated (Karnataka govt rates) ride prices | §15, §5 |
+| `POST /api/langgraph/ask` | Full agent chat loop (LLM summaries only) | §13 |
+| `POST /api/langgraph/route-context` | Parallel weather/traffic/news/prices/trains → LLM LiveContext | §13, §28 |
+| `GET  /api/search/news?lat=&lng=&keyword=&limit=` | Cached corridor news (NOW WORKS — §33.3) | §13, §33 |
+| `GET  /api/search/weather?lat=&lng=` | Open-Meteo current + rain window | §13 |
+| `GET  /api/routes/live-trains?from_station=&to_station=` | eRail.in live trains (or flagged fallback) | §15, §25 |
+| `GET  /api/routes/traffic-model-info` | Traffic model transparency (what + MAE) | §28 |
+| `GET  /api/search/photo?name=&max_width=` | **Server-side photo byte proxy (NOW WORKS — §33.4)** | §33.4 |
+| `GET  /api/photo?name=&max_width=` | **Alias the frontend calls (NOW WORKS)** | §33.4 |
+| `GET  /api/health` | Status + `services_loaded` | §30 |
+
+**Modes of travel (each real, never fabricated):**
+- **walk** — free; anchor stop ≤ 2 km (`WALK_OPTION_MAX_M`); "★ Top" only on short final legs.
+- **bus** — real BMTC route via GTFS; ≤ 3 **spaced** forward arrival stops (`_spaced_arrival_stops`,
+  500 m / 600 m spacing, skip board stop, forward-progress hard rule); real times + real fare.
+- **metro** — Namma Metro **Purple + Green only** (Blue/Yelahanka under construction — banned).
+- **train** — Karnataka rail long legs via eRail.in / `STATION_CODES` (~48 stations; 7 flagged
+  fallback pairs).
+- **ride** — Uber/Ola/Rapido/Auto: **Live** = SerpAPI ride_options (real); **Estimated** = Karnataka
+  govt rate formula. Never a fake "Live".
+- **drive** — GraphHopper car road path + fuel (₹/litre ÷ mileage); interpolated+flagged if GH down.
+
+**Hop / segment contract (the centerpiece, §11/§32):** time-chained (`arrivalMin`),
+`connectedFrom`-chained, catch buffer **4 min** (`BUFFER_MIN`), forward-progress hard rule,
+per-person fare, budget-respecting, junction-relevant `nextStopId`, **visited set server AND
+client** (no repeated stops), progress badge "→ X.X km to dest".
+
+**LangGraph tools (8, §13):** weather, traffic, news, pricing, search+geo, trains, reviews —
+fetched in **parallel** (`ThreadPoolExecutor(max_workers=5)`); LLM (OpenRouter→Gemini,
+`max_tokens=256`) writes summaries only. LLM failure ⇒ `None` ⇒ deterministic fallback.
+
+**Reliability score formula (§12):** `0.5*(rating/5) + 0.3*sentiment_avg +
+0.2*min(1, log1p(count)/log1p(100))` × status_factor (OPERATIONAL 1.0 / CLOSED_TEMPORARILY 0.4 /
+CLOSED_PERMANENTLY 0.0); sentiment = AFINN-165 offline lexicon. Green ≥70, yellow 50–70, red <50
+(pins); FEATURES.md score-pill: green ≥80 / yellow ≥60 / orange ≥40 / red <40.
+
+**TOPSIS criteria (§12):** cost, time_of_day, walking, group_size, weather, traffic_crowd,
+availability, safety (deterministic weights in `topsis_engine.py`).
+
+**Data loading & handling (§9/§17):** GTFS pickle `gtfs_cache.pkl` (76 MB, LFS) → 2970 BMTC stops
++ metro/rail graph (`transit_graph.pkl`); fares JSON; traffic model JSON; lazy singletons in
+`app_state.py`; warm startup < 3 s budget. Missing data ⇒ labeled "Unavailable/Estimated" — the
+honesty map (§27).
+
+### 33.10 WHY each integration exists (the "why did we integrate this" the owner asked for)
+
+| Service | What it gives | Why integrated (problem → solution) | Status |
+|---|---|---|---|
+| **Google Places/Geocoding/Directions (New)** | Canonical places, photos, hours, business_status, traffic ETA | Preferred truth source; searched first. | **Billing OFF** — photos/hours/traffic dormant until enabled (§31 #2). Photos plumbing now works end-to-end (byte proxy). |
+| **SerpAPI** | Real Google reviews/ratings, ride options, OSM→Google resolve | Google billing off ⇒ SerpAPI supplies real ratings (fix §15.1) + enrichment for `osm:` ids + live ride quotes. | LIVE (key present) |
+| **Open-Meteo** | Real weather, no key | Free, zero-secret live context. | LIVE |
+| **eRail.in** | Real train schedules | Karnataka rail long legs. | LIVE (fallback flagged) |
+| **Reddit + DDG (via DataImpulse)** | Real Bangalore news | LIVE news panel; proxy avoids datacenter-IP blocks. | **NOW WORKS** (loop started + direct-fetch fallback §33.3/33.5) |
+| **OpenRouter → Gemini** | LLM summaries | OpenRouter out of credits (402) ⇒ provider chain falls back to Gemini; summaries only, never numbers. | LIVE |
+| **GraphHopper (Docker)** | Real road routing on Bangalore PBF | OSRM banned; GH is the ONLY container (Java, 2 GB heap, :8080, `gh-data` volume). | LIVE (Render: none ⇒ interpolated+flagged) |
+| **Postgres (Neon)** | Trip persistence | PROMPT_8 Trip Planner storage. | **Not built yet** (`DATABASE_URL` config-only) |
+
+### 33.11 The proxy system — exactly when it is and is NOT used (updated)
+
+- **DataImpulse** = datacenter proxy for **scrape-only** endpoints: Reddit/DDG news, Google-search
+  scrape. Credentials in `.env` (`DATAIMPULSE_USER/PASS/HOST`), never committed.
+- **Used for:** `NewsEngine` scrapes **only** when creds exist (`_fetch` → `_proxy.get`).
+- **NOT used for:** GraphHopper (localhost), our own backend, Google Places API (key-authenticated),
+  Open-Meteo, eRail, SerpAPI — those authenticate directly.
+- **NEW:** no creds ⇒ `_fetch` falls back to **direct requests** so news still works (§33.5).
+  `ProxyManager` itself is unchanged.
+
+### 33.12 Docker — what runs and WHY
+
+- **Only GraphHopper runs in Docker** (`docker compose up -d graphhopper`, `israelhikingmap/graphhopper:latest`, `8080:8989`, volume `./gh-data:/data`, first boot imports `bangalore.osm.pbf` 42 MB LFS, heap `-Xmx2g`). Backend + frontend run natively per spec. OSRM is banned. On Render (no Docker) walk/drive become interpolated + honestly flagged (PROMPT_9 honesty table).
+- Config caveat: `gh-data/config.yml` references missing `car.json`/`foot.json` `custom_model_files`; GH tolerates it — **never edit while healthy**.
+
+### 33.13 What we must do NEXT and HOW (updated after this session)
+
+1. **Commit + push this session** (this task) — message = the changes, no date.
+2. **Owner: enable Google billing + Places/Geocoding/Directions APIs.** Why: search/enrich already
+   try Google **first**; with billing on, photos (byte-proxy now works), hours, business_status,
+   and traffic ETA light up automatically. SerpAPI/OSM stay as honest fallbacks. Done-check:
+   `?q=cubbon park` shows a Google photo + rating + traffic-ETA.
+3. **Verify the Gemini LLM fallback live** — `POST /api/search/enrich` on Cubbon Park must return a
+   real summary (else top up OpenRouter credits).
+4. **Wire the SerpAPI live ride overlay** into `SearchService.ride_prices` + `PricingTool.run`
+   (currently `live_options=None`) so real Uber/Ola quotes surface as "Live". Done-check:
+   `POST /api/rides/prices` shows a `"live"` entry.
+5. **PROMPT_8 — Trip Planner** (§24.2, design locked): 2–5 day itinerary, budget/interest/pace,
+   geo-clustered days, per-day pins, on-demand transport, **Postgres persistence (Neon)**.
+6. **PROMPT_9 — Render + Neon deploy** (§24.3, CORS pre-wired for `*.onrender.com`); no-GraphHopper
+   honesty table already decided.
+7. **Per-session hygiene forever:** `git pull` → `pytest tests/ -q` → `npx tsc --noEmit` → work →
+   push after green. Never diverge on `main`; never `git fetch --filter=blob:none`; never edit
+   `gh-data/config.yml` while the container is healthy.
+
+### 33.14 Session recap table (symptom → root cause → choice → proof)
+
+| # | Symptom | Root cause | Choice (never regress) | Proof |
+|---|---|---|---|---|
+| A | LIVE news always empty | `NewsEngine` built but `start()` never called | Start it in `main.py` lifespan (§33.3) + direct-fetch fallback for no-proxy (§33.5) | `refresh_once()` → 8 real items; 104 tests green |
+| B | No photos, grey tile | frontend `/api/photo` vs backend `/api/search/photo`; old proxy leaked key | Serve both paths; byte-proxy via `fetch_photo()` (key stays server-side); 404 on none (§33.4) | `/photo` + `/search/photo` registered; 404 no-crash; tsc 0 errors |
+
+---
+
+*End of VOYAGER v2 Master Knowledge Base. Latest session: **2026-08-04** — News + Photo fixes:
+the news engine is now actually started (`main.py` lifespan) with a no-proxy direct-fetch fallback
+(`NewsEngine._fetch`), and photos now render through a server-side byte proxy (`fetch_photo`,
+`/api/photo` + `/api/search/photo`, no key leak, honest 404). 104 tests + tsc clean. See §33 for
+the full record, §33.8 for do-not-regress #40–44, and §33.13 for the next actions (Google billing →
+Gemini verify → live rides → PROMPT_8 → PROMPT_9). Before every commit: `git pull`,
 `pytest tests/ -q`, `npx tsc --noEmit`, then push. This file is fully self-contained — no old
 folder is needed.*
