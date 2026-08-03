@@ -7,6 +7,7 @@ import AToBPanel from "../components/AToBPanel";
 import TripPanel from "../components/TripPanel";
 import DiscoveryPanel from "../components/DiscoveryPanel";
 import NewsPopup from "../components/NewsPopup";
+import SegmentFlowView from "../components/SegmentFlowView";
 import type { LatLng } from "../types";
 import "./MainPage.css";
 
@@ -17,7 +18,7 @@ const TABS: { key: Mode; label: string; icon: string }[] = [
 ];
 
 export default function MainPage() {
-  const { mode, setMode, setUserLoc } = useApp();
+  const { mode, setMode, setUserLoc, flowOpen, setFlowOpen, flowParams } = useApp();
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -41,6 +42,20 @@ export default function MainPage() {
         <main className="map-wrap">
           <MapView />
           <NewsPopup />
+          {flowOpen && (
+            <section className="flow-sheet glass-strong">
+              <div className="flow-sheet-head">
+                <span className="row">
+                  <span className="material-symbols-outlined">route</span>
+                  <b>Build your route</b>
+                </span>
+                <button className="icon-btn" onClick={() => setFlowOpen(false)} title="Close">
+                  <span className="material-symbols-outlined">close</span>
+                </button>
+              </div>
+              <SegmentFlowView groupSize={flowParams.groupSize} budget={flowParams.budget} />
+            </section>
+          )}
         </main>
 
         <DiscoveryPanel />

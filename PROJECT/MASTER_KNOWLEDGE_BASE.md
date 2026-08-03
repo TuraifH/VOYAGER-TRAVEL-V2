@@ -76,6 +76,7 @@
 29. The 2026-08-03 Hardening Session — decisions summary (full record in §19.4 / §20 #26–36)
 30. Current Run State — ports, PIDs, proxy, Docker, and a full verify checklist
 31. Next Actions Master Plan — Docker (why), Google billing, live rides, PROMPT_8/9, QA loop
+32. The 2026-08-04 Session — Progressive Hop Builder FIX (no more looping) + bottom-sheet window + every API/option/segment/tool explained for the next session
 
 ---
 
@@ -1449,6 +1450,33 @@ that precision). Full suite back to **104 passed**.
 36. **SerpAPI thumbnail `photo_name` can be a full `http…` URL** (not just a name) — the
     `/api/search/photo` proxy would mangle it. **Fix**: `DiscoveryPanel.photoUrl` passes
     `http`-prefixed names straight to `<img src>`, others go through the proxy.
+37. **Multi-hop window loops — "NO PROGRESS!!"** — offered 1–5 min micro-hops between the SAME
+    Yelahanka stops (`402-B → yelahanka 5th phase → … → 402-B`). **Root cause**: `_bus_rides`
+    used `forward[:MAX_ARRIVAL_STOPS_PER_ROUTE]`, i.e. the *first 3 stops* of each route = 1-minute
+    adjacent-stop hops; loop-shaped routes list the boarding stop twice, so the board stop was
+    offered again; no recurring-stop guard server-side. **Fix**: new `_spaced_arrival_stops()` —
+    skips the boarding stop, requires first arrival ≥ `MIN_BUS_HOP_M` (500 m) from board, each
+    later arrival ≥ previous + `MIN_HOP_SPACING_M` (600 m), all passing `_forward_progress`
+    (hard rule `hav(arrival→dest) < hav(anchor→dest) + tol`); single-nearest-forward fallback for
+    very short routes. `build_segment_next` now passes `visited={stop_names}` and
+    `_build_segment_from_anchor` drops any option whose destination stop is already on the journey.
+    Client mirrors it: `SegmentFlowView` keeps its own `visited` set. (See §32.) Do-not-regress:
+    **a hop builder must never offer the same stop twice, and every hop must move toward the dest.**
+38. **"★ Top" kept recommending a 0.4 km WALK on a 30 km journey** — so clicking the star walked
+    stop-to-stop and felt like no progress. **Root cause**: `_mark_top_recommended` marked the
+    walk primary whenever *any* walk ≤ 1.5 km existed, and the generic heuristic (fare/walk/arrival)
+    always let the quick local walk win over a long-haul bus. **Fix**: a walk is now top **only**
+    when it actually lands near the destination (`hav(walk-stop → dest) ≤ WALK_PRIMARY_M * 2`,
+    i.e. a short final leg). Otherwise the top becomes the **farthest-reaching transit hop**
+    (min remaining distance to dest, tie-broken by fare/arrival) — so a long trip's top is
+    507-D → hbr layout (16.5 km), not a 0.4 km walk. (See §32.5.) *Do-not-regress:* short hops stay
+    free-walk top (§. `/tests` T4 still asserts walk+fee=0); long hops must push transit.
+39. **Bottom-sheet hop window rendered UNDER the map** — the window existed but was invisible /
+    appearing behind the map. **Root cause**: `.flow-sheet` was `z-index: 100`, but **Leaflet
+    panes are z-index 200–700** (controls 800), so the sheet sat *below* all map layers inside the
+    `.map-wrap` stacking context. **Fix**: `z-index: 1000` on `.flow-sheet`. (See §32.6.)
+    *Do-not-regress:* anything rendered on the map must use z ≥ 1000; the `.map-wrap { z-index: 0 }`
+    trap keeps it all contained.
 
 ---
 
@@ -1996,10 +2024,10 @@ The **full record** (bug reproductions, choices, live verification) lives in **�
 
 ## 30. CURRENT RUN STATE — PORTS, PIDS, PROXY, DOCKER, VERIFY CHECKLIST
 
-### 30.1 What should be running (2026-08-03 snapshot)
+### 30.1 What should be running (2026-08-04 snapshot — servers restarted this session)
 | Service | URL | How started | Notes |
 |---|---|---|---|
-| Backend (uvicorn) | `http://127.0.0.1:8000` | `python -m uvicorn backend.main:app --port 8000` (from `PROJECT/`) | health `{"status":"ok","services_loaded":true}` |
+| Backend (uvicorn) | `http://127.0.0.1:8000` | `python -m uvicorn backend.main:app --port 8000` (from `PROJECT/`) | **restarted this session** to serve the hop-loop + fix; health `{"status":"ok","services_loaded":true}` |
 | Frontend (Vite) | `http://localhost:3000` (**NOT** 127.0.0.1) | `cmd /c npx vite --port 3000` (from `PROJECT/frontend`) | serves latest source; hard-refresh after backend restarts |
 | GraphHopper (Docker) | `http://127.0.0.1:8080` | Docker Desktop manually, then `docker compose up -d graphhopper` | first boot 1–3 min graph cache; `/info` → profiles car, foot |
 
@@ -2036,26 +2064,29 @@ The **full record** (bug reproductions, choices, live verification) lives in **�
 
 ## 31. NEXT ACTIONS MASTER PLAN (ordered, with why + done-check)
 
-1. **Owner: enable Google billing + Places/Geocoding/Directions APIs.**
+1. **Commit + push the 2026-08-04 session** (after owner approval — THIS is the session's last
+   step). Why: the working tree is dirty with the hop-loop fix (spaced arrival stops, visited set,
+   progress-aware top) + bottom-sheet window; uncommitted work is lost on machine issues.
+   Done-check: `git status` clean, `pytest` 104, `tsc` clean. (The prior 2026-08-03 hardening was
+   already committed as `f2a8000` and pushed.)
+2. **Owner: enable Google billing + Places/Geocoding/Directions APIs.**
    Why: OSM+SerpAPI are honest fallbacks but Google gives canonical places, photos, hours,
    business_status, and traffic — and search/enrich already try Google first, so it lights up
-   automatically. Done-check: `?q=cubbon park` shows a Google photo + rating.
-2. **Verify Gemini LLM fallback live.**
+   automatically. Done-check: `?q=cubbon park` shows a Google photo + rating + traffic ETA.
+3. **Verify Gemini LLM fallback live.**
    Why: OpenRouter is out of credits (402); the rewritten provider chain must prove Gemini works
    end-to-end. Done-check: `POST /api/search/enrich` on Cubbon Park returns a real summary (not the
    deterministic fallback). If Gemini fails too → top up OpenRouter credits.
-3. **Commit + push the 2026-08-03 session** (after owner approval).
-   Why: the working tree is dirty with the fixes above; uncommitted work is lost on machine issues.
-   Done-check: `git status` clean, `pytest` 104, `tsc` clean.
 4. **Wire the SerpAPI live ride overlay** into `SearchService.ride_prices` + `PricingTool.run`
    (currently pass `live_options=None`).
    Why: live Uber/Ola quotes are implemented + tested but not yet surfaced; with Google billing on,
    Directions + SerpAPI ride_options will give real live prices. Done-check: `POST /api/rides/prices`
    shows a `"live"` entry with a SerpAPI note.
-5. **Re-verify the details-panel stacking in a real browser.**
+5. **Re-verify the details-panel stacking + flow-sheet z-order in a real browser.**
    Why: CSS fixes are in but the panel still "ghosts" for the owner on scroll; needs devtools to
    confirm (levers: `isolation: isolate` on `.app-body`, or render `DiscoveryPanel` inside the map
-   DOM). Done-check: panel stays fully visible while scrolling over the map.
+   DOM). The flow-sheet must stay at z ≥ 1000 (Leaflet panes are 200–700 — §20 #39). Done-check:
+   panel stays fully visible while scrolling over the map; the hop window always covers the map.
 6. **Build PROMPT_8 — Trip Planner** (§24.2, design locked).
    Why: it's the remaining flagship feature; everything it needs (search, transport interface,
    Postgres `DATABASE_URL`) is already wired.
@@ -2067,8 +2098,271 @@ The **full record** (bug reproductions, choices, live verification) lives in **�
 
 ---
 
-*End of VOYAGER v2 Master Knowledge Base. Latest session: 2026-08-03 hardening (map fly-away,
-progressive hop builder, SerpAPI/OSM→Google resolution, LLM provider chain, `/routes/drive`, CSS
-stacking). Next: Google billing + Gemini verification + commit, then PROMPT_8, then PROMPT_9.
-Before every commit: `git pull`, `pytest tests/ -q`, `npx tsc --noEmit`, then push. This file is
-fully self-contained — no old folder is needed.*
+## 32. THE 2026-08-04 SESSION — HOP-BUILDER LOOP FIX + BOTTOM-SHEET WINDOW (DETAILED, FOR THE NEXT SESSION)
+
+> This is the **complete** record of the session that fixed the two live bugs the owner hit in
+> production at **http://localhost:3000** (backend :8000, GraphHopper :8080). Read it alongside
+> §11 (hop mechanism), §14.11 (progressive builder), §19.4 (2026-08-03 hardening), §20 #37–39
+> (do-not-regress), §25 (all APIs), §26 (all constants), §28 (deep-dive anatomy).
+> **Session commit: `f2a8000` (2026-08-03 hardening) was already pushed. THIS session's work is
+> the dirty tree; commit+push is its final step.**
+
+### 32.1 What the owner saw (the two live bugs)
+
+1. **"The multi-hop builder is STILL BROKEN"** — pasted breadcrumb showed an infinite-feeling
+   local loop around Yelahanka:
+   `walk → Yelahanka 4th Phase → 402-B → yelahanka 5th phase → G-9 → yelahanka 5th phase →
+   402-B → yelahanka 5th phase → 285-MC → shrusti school → 402-B → yelahanka 5th phase →
+   walk → Shrusti School → Sai Vidya Institute…` — Hop 8 had 11 options, all **1–5 min
+   micro-hops** at ~0.4 km between the same two areas, plus warning "Some stops have no more
+   scheduled buses today". Owner: **"NO PROGRESS!!"** and **"open a NEW WINDOW at the BOTTOM OF
+   THE MAP (bottom sheet)"** instead of the inline sidebar view.
+2. **Hop window was invisible / behind the map** — after the bottom sheet was first added it
+   rendered **underneath** the Leaflet map (z-index bug, see §20 #39).
+
+### 32.2 Root-cause diagnosis (why it looped with no progress)
+
+Four independent defects, each discovered by tracing `build_segment_next` live:
+
+| # | Defect | Why it produced the loop |
+|---|---|---|
+| A | `_bus_rides` offered only `forward[:MAX_ARRIVAL_STOPS_PER_ROUTE]` (the **first 3 stops**) of every route | The first stops of a route are the *adjacent* stops → 1-min, 0.4 km micro-hops. |
+| B | Loop-shaped routes list the **boarding stop twice** in `forward` | "402-B → yelahanka 5th phase" got offered **from** 5th phase, so you rode 402-B back to the same area. |
+| C | No **visited set** server-side | Nothing stopped the builder from repeatedly re-proposing a stop already on the journey. |
+| D | `_mark_top_recommended` promoted any ≤1.5 km WALK to "★ Top" + generic score always favored the fast local walk | Even when buses existed, the star badge said "walk 400 m", so clicking the star walked stop-to-stop. |
+
+### 32.3 Backend fix A — spaced arrival stops (`_spaced_arrival_stops`)
+
+New method in `backend/services/segment_builder.py` (line ~464), replacing the
+`forward[:MAX_ARRIVAL_STOPS_PER_ROUTE]` slice. New constants (§26):
+
+```
+MIN_BUS_HOP_M       = 500   # first arrival stop at least this far from boarding stop
+MIN_HOP_SPACING_M   = 600   # each later arrival >= previous arrival + this far along route
+MAX_ARRIVAL_STOPS_PER_ROUTE = 3   # max distinct arrival stops offered per route
+```
+
+Algorithm (line 464–497):
+1. Resolve the boarding stop via GTFS (`resolve_stop_name`) so spelling variants match.
+2. Iterate `forward` in route order; skip any stop that fails **`_forward_progress`** (hard rule
+   `hav(arrival→dest) < hav(anchor→dest) + tol` — the journey must move toward the destination).
+3. **Skip the boarding stop itself** (fixes defect B): compare both raw name and resolved name,
+   case-insensitive.
+4. Pick the first arrival at `≥ MIN_BUS_HOP_M` (500 m) from the board; each next picked stop must
+   be `≥ previous + MIN_HOP_SPACING_M` (600 m) along the route. Stop at 3 picks.
+5. **Fallback**: if a short route yields nothing, take the single nearest forward-progress stop
+   (so very short routes still produce one usable hop instead of zero).
+
+Result: hops are now **real segments** — first arrival far enough to matter (e.g. 507-D → koli
+farm 11.13 km/40 min), spaced so the user never sees "arrive at the next stop in 1 minute".
+
+### 32.4 Backend fix B — visited set (no stop is ever offered twice)
+
+- `build_segment_next` computes `visited = {self._chosen_stop_key(c) for c in chosen_legs}`.
+- `_build_segment_from_anchor(..., visited: set | None = None)` filters **every** option whose
+  destination stop name (lowercased) is already on the journey — walk *and* transit alike.
+- New static `_chosen_stop_key(leg)` (line ~908) normalizes `destinationStop` whether it arrives
+  as a `dict` or a `str` (the API schema accepts both; §14.11/§29 #3).
+- **Client mirror**: `SegmentFlowView.optionsForLevel` keeps its own `visited` set (line ~66–81)
+  and drops any option whose destination stop is already used — the UI cannot loop even if the
+  backend is bypassed.
+
+### 32.5 Backend fix C — progress-aware top-recommendation (`_mark_top_recommended`)
+
+New signature: `_mark_top_recommended(self, options, now_min, walk_cands, dest_lat, dest_lng)`.
+Three callers updated: `_build_segment_1`, `_build_segment_2`, `_build_segment_from_anchor`.
+
+New rules (line 774–797):
+1. A WALK is "★ Top" **only if** its destination stop is within `WALK_PRIMARY_M * 2` (3 km) of the
+   **final destination** — i.e. it's a genuine short final leg. This preserves `T4`
+   (short hop → top is a free walk).
+2. Otherwise (long journey): top = the transit option (bus/metro/train) with the **smallest
+   remaining straight-line distance to the destination**, tie-broken by fare + arrival. This is
+   the hop that makes the **most progress per ride**.
+3. If there are no transit options at all, fall back to the old fare/walk/arrival heuristic.
+
+Live proof (Yelahanka School → Wonderla, 15:20):
+```
+hop1 TOP: bus 507-D → hbr layout               16.51 km   (was: walk 0.42 km!)
+hop2 TOP: bus 296-B → kempegowda bus station   12.32 km
+hop3 TOP: bus 225-C → pattanagere jayanna circle 10.91 km
+hop4 TOP: metro Purple → Challaghatta          33.64 km
+hop5 TOP: bus 334-B → town hall                11.74 km
+hop6 TOP: metro Purple → Mysuru Road           22.70 km
+```
+Every hop moves forward; **0 visited-returners** in every segment.
+
+### 32.6 Frontend fix D — the bottom-sheet window (Google-Maps style)
+
+State added to `src/context/AppContext.tsx` (lines 44–47, 76–77):
+```
+flowOpen:   boolean                       // is the hop window showing?
+setFlowOpen: (v: boolean) => void
+flowParams: { groupSize: number; budget: number }   // default {1, 500}
+setFlowParams: (p: …) => void
+```
+`src/components/AToBPanel.tsx` — `findRoutes` (lines 120–134):
+- transit/walk → `setFlowParams({ groupSize, budget })` then `setFlowOpen(true)` (open the sheet).
+- ride/drive → `setFlowOpen(false)` (no hop window).
+- The inline `<SegmentFlowView>` render + `showFlow` local state were **removed** — the window now
+  lives at the map level, owned by `MainPage`.
+
+`src/pages/MainPage.tsx` (lines 45–57): renders, *inside* `.map-wrap`:
+```html
+<section className="flow-sheet glass-strong">
+  <div className="flow-sheet-head">
+    <strong>Build your route</strong>
+    <button className="icon-btn" onClick={() => setFlowOpen(false)} title="Close">✕</button>
+  </div>
+  <SegmentFlowView groupSize={flowParams.groupSize} budget={flowParams.budget} />
+</section>
+```
+`src/pages/MainPage.css` — `.flow-sheet`:
+```
+position: absolute; left/right/bottom: 0;       /* sits at the BOTTOM of the map */
+display: flex; flex-direction: column;
+max-height: 50%; min-height: 0;
+z-index: 1000;                                  /* ABOVE Leaflet panes (200-700) + controls (800) */
+border-radius: var(--radius) var(--radius) 0 0; /* rounded top corners = sheet look */
+overflow: hidden;
+animation: slide-up 0.25s ease;                 /* slides up from the map bottom */
+```
+`.flow-sheet .flow-view { overflow-y: auto; }` — the hop list scrolls inside the sheet.
+> **Do-not-regress (this is what was ALMOST shipped broken):** Leaflet panes run at z-index
+> **200–700** (controls 800). ANY overlay on the map must be `z-index ≥ 1000`, and `.map-wrap`
+> must keep `z-index: 0` so the map can't escape over the sidebar (`z-index: 10`) or bottom-nav
+> (`z-index: 1000`).
+
+### 32.7 Progress badge on every hop card
+
+`SegmentFlowView.tsx` — new `havKm()` (line 30) computes straight-line km from a hop's
+`destinationStop` to the final destination; each hop card shows
+`<span className="small dest-progress">→ X.X km to dest</span>` (line 267–269), so the user sees
+progress toward the destination at every level (not just "hop 3 of N").
+
+### 32.8 Verification performed (all green)
+
+1. `python -m pytest tests/test_segment_builder.py -q` → **14 passed**.
+2. `python -m pytest tests/ -q` → **104 passed** in 33 s.
+3. `cd frontend; npx tsc --noEmit` → **0 errors**.
+4. Live chain test (real builder, real GTFS): hops above, 0 visited-returners, no repeated stops.
+5. Short-hop regression (MG Road → Near MG Road): still returns a **free walk** as ★ Top (T4).
+6. Servers restarted to run the edited code: backend uvicorn (new PID) on :8000, Vite (new PID) on
+   :3000, GraphHopper wslrelay still on :8080. Verified: health OK, frontend HTTP 200, Vite serves
+   the new `SegmentFlowView.tsx` (contains `visited` filter + `dest-progress`), `MainPage.css`
+   contains `z-index: 1000` for `.flow-sheet`.
+
+### 32.9 EVERYTHING IN THE SYSTEM, EXPLAINED (the "understand every element" reference)
+
+**Modes of travel** (each is a real computation, never fabricated):
+- **walk** — free; anchor = a nearby stop ≤ 2 km (`WALK_OPTION_MAX_M`); shown first; "★ Top" only
+  on short final legs (§32.5).
+- **bus** — real BMTC route via GTFS: board a stop near the anchor, ride to one of ≤ 3 **spaced**
+  forward stops (§32.3), optionally a metro-interchange stop (`_metro_transfer_stop`) — real
+  scheduled departure/arrival, real route number, real fare (transit_fares.json).
+- **metro** — Purple + Green only (Yelahanka/Blue under construction — banned).
+- **train** — Karnataka rail via eRail.in data for long legs.
+- **ride** — Uber/Ola/Rapido/Auto **live vs estimated**: `Live` = SerpAPI ride_options (real);
+  `Estimated` = Karnataka govt rate formula (§5 ride_pricing.py). Never a fake "Live".
+- **drive** — GraphHopper car profile road path + fuel cost (₹/litre ÷ mileage), Live vs Estimated.
+
+**The hop mechanism** (the centerpiece, §11): `build_segments(source, destination, group, budget)`
+returns **Segment 1** ("getting out of your current location") + **Segment 2** ("main transit
+leg") as a tree of options; `build_segment_next` chains each user choice into the next level. The
+spec contract (§11 / PROMPT_3 T3): time-chained (`arrivalMin`), `connectedFrom`-chained, catch
+buffer 4 min (`BUFFER_MIN`), forward progress hard rule, fare = per-person, budget respected,
+junction-relevant `nextStopId`.
+
+**Scoring** (`topsis_engine.py`): TOPSIS over reliability (green/yellow/red pill), reviews,
+open-hours, distance — drives discovery ordering, never fabricates numbers.
+
+**Live layer** (`langgraph/`, §13): a LangGraph that fetches **weather** (Open-Meteo),
+**traffic** (Google Directions when billing on, else labeled), **news** (Reddit + DDG via
+DataImpulse), **ride prices** (SerpAPI), **trains** (eRail.in) **in parallel**; LLM (OpenRouter →
+Gemini fallback, `max_tokens=256`) writes **summaries only — never numbers**.
+
+**Search** (§12/§15): **Google Places (New) first** → **OSM Nominatim fallback**; reviews via
+**SerpAPI** (`place_results.user_reviews.most_relevant`, keys `username`/`description`); OSM ids
+resolved to Google via `_resolve()` when Google billing is off. Enrich = LLM summary + photos +
+rating + hours + reliability.
+
+**Frontend** (§14): React + TS + Vite + Leaflet; `AppContext` owns ALL state (mode, userLoc,
+flowOpen/flowParams, journey, ridePath, flyTo…); components are dumb renderers. Glassmorphism
+(`--panel`, `--glass-blur`), `.map-wrap{z-index:0}` z-trap, sidebar `z-index:10`, bottom-nav +
+flow-sheet `z-index:1000`.
+
+### 32.10 WHY we integrated each external service (the "why" the owner asked for)
+
+| Service | What it gives us | Why it exists (problem → solution) |
+|---|---|---|
+| **GraphHopper (Docker)** | Real road routing (car/foot) on Bangalore PBF | OSRM banned (retired); GH is the ONLY Docker container — Java, 2 GB heap, graph cache, port 8080 (container `8080:8989`, volume `./gh-data:/data`). Used by drive path + walk path. On Render (no Docker) → interpolated + honestly flagged. |
+| **SerpAPI** | Real Google reviews/ratings, photos, ride options, OSM→Google `_resolve()` | Google Places billing was OFF → ratings missing (fix: §15.1 SerpAPI rating fallback); enrichment impossible for `osm:` ids (fix: `_resolve` OSM→Google); live ride quotes. Key `place_results.user_reviews.most_relevant`. |
+| **Google Places (New)** | Canonical places, photos, hours, business_status, traffic | Preferred source; search/enrich already try Google **first**, so enabling billing lights it up automatically (§31). SerpAPI/OSM are the honest fallbacks. |
+| **Open-Meteo** | Real weather, no API key | Free, reliable, zero-secret live context. |
+| **eRail.in** | Real train schedules | Karnataka rail long legs (train options are real). |
+| **Reddit + DDG via DataImpulse** | Real news | LIVE news panel; DataImpulse is the **proxy** so the upstream doesn't block datacenter IPs. |
+| **OpenRouter → Gemini** | LLM summaries | OpenRouter ran out of credits (402) → rewritten provider chain falls back to Gemini; `max_tokens=256`; LLM never writes numbers. |
+
+**The Proxy System (DataImpulse) — exactly when it is and is NOT used (§16):** DataImpulse is a
+**datacenter-proxy-for-SERP/retrieval only**. It is used ONLY for (a) Reddit/DDG news scraping
+(upstreams block datacenter IPs) and (b) Google-Search-scrape endpoints that need residential-ish
+rotation. It is **never** used for: GraphHopper (localhost), our own backend, Google Places API
+(key-authenticated), Open-Meteo, eRail, or anything that would break CORS/auth. Proxy secrets live
+in `.env` (`PROXY_HOST/PORT/USER/PASS` — no commit).
+
+### 32.11 The data — how EVERYTHING is loaded and handled (§9, §17, §27)
+
+- **BMTC GTFS** → pickle `DATA_FOLDER/processed/gtfs_cache.pkl` (`gtfs_service.py`): stop names,
+  route shapes, scheduled trips. Loaded once, shared lazily (`app_state.py` singletons).
+- **Bus stops master** `bmtc_all_stops_master.csv` → 2970 stops (`database.py`). Metro: 69
+  Purple+Green stations + 67 adjacency edges. Rail: 48 stations.
+- **Fares** `transit_fares.json` + Karnataka govt ride rates (`fare_engine.py`, `ride_pricing.py`).
+- **Transit graph** `transit_graph.pkl` → best-first A* route finder (`transit_graph.py`,
+  `route_finder.py`).
+- **Honesty map (§27)**: missing data → "Unavailable/Estimated/Approx" labels; interpolated = dashed
+  geometry; ride = Live vs Estimated; LLM summaries never contain numbers.
+- **Env vars (§18)**: LLM keys (OpenRouter + Gemini), Google keys (not yet enabled), SerpAPI key,
+  DataImpulse proxy, Postgres `DATABASE_URL` (PROMPT_8), fuel/mileage defaults, test-time overrides.
+
+### 32.12 What we must do NEXT and HOW we'll achieve it (plan, ordered)
+
+1. **Commit + push this session** (after owner approval) — dirty tree → clean. (This task.)
+2. **Owner: enable Google billing + Places/Geocoding/Directions** — Google becomes canonical for
+   search/enrich/directions/traffic; SerpAPI stays as rating/ride fallback. Done-check:
+   `?q=cubbon park` shows a Google photo + rating + traffic-ETA.
+3. **Verify the Gemini LLM fallback live** — `POST /api/search/enrich` on Cubbon Park must return a
+   real summary (else top up OpenRouter credits).
+4. **Wire SerpAPI live ride overlay** into `SearchService.ride_prices` + `PricingTool.run`
+   (currently `live_options=None`) — real Uber/Ola quotes surface as "Live". Done-check:
+   `POST /api/rides/prices` shows a `"live"` entry.
+5. **In-browser re-verify** the details panel stacking (`isolation: isolate` on `.app-body` is the
+   lever) and the flow-sheet z-order on a real device (owner reported "behind the map" once — §20
+   #39 is the do-not-regress guard).
+6. **PROMPT_7** (ML/testing) — already done.
+7. **PROMPT_8 — Trip Planner** (§24.2, design locked): 2–5 day itinerary, budget/interest/pace,
+   geo-clustered days, per-day pins, on-demand transport, **Postgres persistence** (Neon on
+   deploy). Needs `DATABASE_URL` in `.env`.
+8. **PROMPT_9 — Render + Neon deploy** (§24.3, CORS pre-wired for `*.onrender.com`); no-GraphHopper
+   honesty table already decided (interpolated walk/drive paths, labeled).
+9. **Per-session hygiene forever**: `git pull` → `pytest tests/ -q` → `npx tsc --noEmit` → work →
+   push after green. Never diverge on `main`; never `git fetch --filter=blob:none`; never edit
+   `gh-data/config.yml` while the container is healthy.
+
+### 32.13 Session recap table (symptom → root cause → choice → proof)
+
+| # | Symptom | Root cause | Choice (never regress) | Proof |
+|---|---|---|---|---|
+| A | Multi-hop loops, 1–5 min micro-hops, same stops | `forward[:3]` + loop shapes list board stop twice + no visited set | `_spaced_arrival_stops` (500 m / 600 m spacing, skip board, forward-only) + `visited` server AND client | live chain: 507-D → hbr layout 16.5 km, 0 returners |
+| B | "★ Top" = 0.4 km walk on a 30 km trip | walk always primary ≤1.5 km; generic score favors local walk | walk top only if it lands ≤3 km from dest; else top = farthest-reaching transit | hop1 top = 507-D 16.5 km; T4 short hop still free walk |
+| C | Window behind the map | `.flow-sheet` z-index 100 < Leaflet panes 200–700 | `z-index: 1000` | served CSS verified contains `z-index: 1000` |
+
+---
+
+*End of VOYAGER v2 Master Knowledge Base. Latest session: **2026-08-04** — progressive hop builder
+FIX (spaced arrival stops `_spaced_arrival_stops` 500/600 m + server/client visited set +
+progress-aware ★ Top) and the **bottom-sheet hop window** (`flowOpen`/`flowParams`, `.flow-sheet`
+z-index 1000, km-to-dest badges). 104 tests + tsc clean; servers live. See §20 #37–39 for the
+do-not-regress rules and §32.12 for the plan. Next: commit+push this session, then Google billing,
+Gemini verification, SerpAPI live rides, PROMPT_8, PROMPT_9. Before every commit: `git pull`,
+`pytest tests/ -q`, `npx tsc --noEmit`, then push. This file is fully self-contained — no old
+folder is needed.*

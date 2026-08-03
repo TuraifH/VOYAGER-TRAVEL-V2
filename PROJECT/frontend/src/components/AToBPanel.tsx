@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
 import type { LatLng, PlaceResult, RidePrice } from "../types";
-import SegmentFlowView from "./SegmentFlowView";
 import "./AToBPanel.css";
 
 type SubMode = "transit" | "ride" | "drive" | "walk";
@@ -91,7 +90,8 @@ function RideCard({ p, onSelect }: { p: RidePrice; onSelect: (p: RidePrice) => v
 }
 
 export default function AToBPanel() {
-  const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces, setRidePath } = useApp();
+  const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces, setRidePath,
+          setFlowOpen, setFlowParams } = useApp();
   const [travelMode, setTravelMode] = useState<TravelMode>("public");
   const [subMode, setSubMode] = useState<SubMode>("transit");
   const [srcName, setSrcName] = useState("");
@@ -101,7 +101,6 @@ export default function AToBPanel() {
   const [mileage, setMileage] = useState(15);
   const [loading, setLoading] = useState(false);
   const [rides, setRides] = useState<RidePrice[]>([]);
-  const [showFlow, setShowFlow] = useState(false);
   const [fuelCost, setFuelCost] = useState<number | null>(null);
 
   const pickSource = (name: string, p: LatLng) => { setSource(p); setSrcName(name); };
@@ -117,20 +116,22 @@ export default function AToBPanel() {
   const findRoutes = async () => {
     if (!source || !dest) return;
     setLoading(true);
-    setShowFlow(false);
     setPlaces([]);
+    setFlowParams({ groupSize, budget });
     try {
       if (travelMode === "public" && subMode === "ride") {
         const p = await api.ridePrices(source, dest, groupSize);
         setRides(p);
+        setFlowOpen(false);
       } else if (travelMode === "public" && subMode === "transit") {
-        setShowFlow(true);
+        setFlowOpen(true);   // hop window = bottom sheet over the map
       } else if (travelMode === "drive") {
         // fuel cost via distance (GraphHopper driving distance from maps directions)
         const dir = await api.ridePrices(source, dest, 1); // triggers directions distance indirectly
         setRides(dir); // reuse ladder to show drive estimate + fuel note
+        setFlowOpen(false);
       } else {
-        setShowFlow(true);
+        setFlowOpen(true);
       }
     } finally {
       setLoading(false);
@@ -226,8 +227,6 @@ export default function AToBPanel() {
           {rides.map((p, i) => <RideCard key={i} p={p} onSelect={() => selectRide(p)} />)}
         </div>
       )}
-
-      {showFlow && <SegmentFlowView groupSize={groupSize} budget={budget} />}
     </div>
   );
 }

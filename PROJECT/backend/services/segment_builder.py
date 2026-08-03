@@ -51,6 +51,13 @@ CACHE_TTL_S = 300         # 5 min segments cache (PROMPT_3 §5)
 WALK_OPTION_MAX_M = 2000   # walk option always present for any stop <= 2km
 WALK_PRIMARY_M = 1500      # distance <= 1.5km -> WALK is primary (no cab/bike)
 
+# Hop spacing: each bus leg must make REAL progress toward the destination.
+# Before 2026-08-03 the builder only offered the first 3 stops of a route —
+# 1-minute micro-hops between adjacent stops that looped locally ("no
+# progress" bug, §20 #37). Now arrival stops are spaced along the route.
+MIN_BUS_HOP_M = 500        # first arrival stop at least this far from boarding
+MIN_HOP_SPACING_M = 600    # each later arrival >= previous + this far
+
 
 def _hav(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return _hav_m(lat1, lng1, lat2, lng2)
@@ -154,6 +161,7 @@ class SegmentBuilder:
             dest_lat=dest["lat"], dest_lng=dest["lng"],
             now_min=now_min, group_size=group_size, budget=budget,
             seg_num=len(chosen_legs) + 1, connected_from=stop_name,
+            visited={self._chosen_stop_key(c) for c in chosen_legs},
         )
         probes = self._probes_for_segment(seg, dest, group_size, budget)
         return {"journey": journey, "segments": [seg], "probes": probes,
@@ -181,7 +189,8 @@ class SegmentBuilder:
 
         for opt in options:
             self._fill_transit_count(opt, now_min)
-        self._mark_top_recommended(options, now_min, walk_cands)
+        self._mark_top_recommended(options, now_min, walk_cands,
+                                   destination["lat"], destination["lng"])
         for opt in options:
             if opt["mode"] == "walk" and not opt["probeNext"]:
                 p = self._probe_from_stop(opt["destinationStop"], destination,
@@ -216,7 +225,8 @@ class SegmentBuilder:
         options = options[:MAX_SEG2_OPTIONS]
         for opt in options:
             self._fill_transit_count(opt, opt.get("arrivalMin") or now_min)
-        self._mark_top_recommended(options, now_min, None)
+        self._mark_top_recommended(options, now_min, None,
+                                   destination["lat"], destination["lng"])
         return {"segmentId": 2, "title": "Segment 2: Main Transit Leg",
                 "sourceName": None, "arrivalAtSegmentStart": None, "options": options}
 
@@ -242,7 +252,8 @@ class SegmentBuilder:
 
     def _build_segment_from_anchor(self, anchor_lat, anchor_lng, anchor_name,
                                    dest_lat, dest_lng, now_min, group_size,
-                                   budget, seg_num, connected_from) -> dict:
+                                   budget, seg_num, connected_from,
+                                   visited: set | None = None) -> dict:
         anchor_pt = {"name": anchor_name, "lat": anchor_lat, "lng": anchor_lng}
         cand = self._candidate_stops(anchor_lat, anchor_lng, dest_lat, dest_lng)
         opts = []
@@ -257,9 +268,15 @@ class SegmentBuilder:
         opts.extend(self._transit_options(anchor_lat, anchor_lng, dest_lat, dest_lng,
                                           now_min, group_size, budget,
                                           connected_from=connected_from, seg_num=seg_num))
+        # never route back to a stop already on the journey (no circling, §20 #37)
+        if visited:
+            opts = [o for o in opts
+                    if (o.get("destinationStop") or {}).get("name", "").strip().lower()
+                    not in visited]
         for opt in opts:
             self._fill_transit_count(opt, now_min)
-        self._mark_top_recommended(opts, now_min, cand[:3] if walk_shown else None)
+        self._mark_top_recommended(opts, now_min, cand[:3] if walk_shown else None,
+                                   dest_lat, dest_lng)
         return {"segmentId": seg_num,
                 "title": f"Segment {seg_num}: Onward connections",
                 "sourceName": anchor_name, "arrivalAtSegmentStart": _fmt(now_min),
@@ -413,12 +430,10 @@ class SegmentBuilder:
             # walk along the route shape in the direction that heads toward dest
             forward = self._route_forward_stops(d.route_number, board_node.name,
                                                 dest_lat, dest_lng)
-            # cap: only real stop-to-stop slices, never the full route
-            for i, stop_name in enumerate(forward[:MAX_ARRIVAL_STOPS_PER_ROUTE]):
-                if not self._forward_progress(board_node.lat, board_node.lng,
-                                              dest_lat, dest_lng, forward[i][1], forward[i][2]):
-                    continue
-                opt = self._bus_ride_option(board_node, d, forward[i], dest_lat, dest_lng,
+            # spaced arrival stops so each hop makes REAL progress (not 1-min
+            # micro-hops between adjacent stops — §20 #37)
+            for fwd in self._spaced_arrival_stops(board_node, forward, dest_lat, dest_lng):
+                opt = self._bus_ride_option(board_node, d, fwd, dest_lat, dest_lng,
                                             group_size, budget, connected_from, seg_num,
                                             not_running=not_running)
                 if opt:
@@ -445,6 +460,41 @@ class SegmentBuilder:
                     out.append(opt)
                     transfer_added += 1
         return out
+
+    def _spaced_arrival_stops(self, board_node, forward, dest_lat, dest_lng):
+        """Spaced arrival stops on a route (each hop makes REAL progress).
+
+        Skips the boarding stop itself (loop shapes list it twice — this caused
+        "402-B -> yelahanka 5th phase" offered FROM 5th phase) and returns up to
+        MAX_ARRIVAL_STOPS_PER_ROUTE stops, each >= MIN_HOP_SPACING_M along the
+        route from the previously picked one, all passing forward-progress.
+        Falls back to the single nearest forward stop when the route is short.
+        """
+        board_resolved = self.gtfs.resolve_stop_name(board_node.name)
+        board_low = (board_node.name or "").strip().lower()
+        picked: list[tuple] = []
+        min_dist = MIN_BUS_HOP_M
+        for stop_name, slat, slng in forward:
+            if not self._forward_progress(board_node.lat, board_node.lng,
+                                          dest_lat, dest_lng, slat, slng):
+                continue
+            low = (stop_name or "").strip().lower()
+            if low == board_low or (board_resolved and low == board_resolved.strip().lower()):
+                continue
+            d_from_board = _hav(board_node.lat, board_node.lng, slat, slng)
+            if d_from_board < min_dist:
+                continue
+            picked.append((stop_name, slat, slng))
+            min_dist = d_from_board + MIN_HOP_SPACING_M
+            if len(picked) >= MAX_ARRIVAL_STOPS_PER_ROUTE:
+                break
+        if not picked:
+            for stop_name, slat, slng in forward:
+                if self._forward_progress(board_node.lat, board_node.lng,
+                                          dest_lat, dest_lng, slat, slng):
+                    picked.append((stop_name, slat, slng))
+                    break
+        return picked
 
     def _metro_transfer_stop(self, forward, board_node, dest_lat, dest_lng):
         """Farthest forward stop on a route that sits near a metro station.
@@ -721,21 +771,37 @@ class SegmentBuilder:
         except Exception:
             opt["transitOptionsFromThisStop"] = 0
 
-    def _mark_top_recommended(self, options: list[dict], now_min: int, walk_cands) -> None:
+    def _mark_top_recommended(self, options: list[dict], now_min: int, walk_cands,
+                              dest_lat: float, dest_lng: float) -> None:
         if not options:
             return
-        # rule: if a walk <= 1.5km exists, walk is primary (short hop, no cab/bike)
-        if walk_cands and walk_cands[0]["dist_m"] <= WALK_PRIMARY_M:
-            walk_opt = next((o for o in options
-                             if o["mode"] == "walk" and o["destinationStop"]["name"] == walk_cands[0]["name"]), None)
-            if walk_opt:
-                walk_opt["isTopRecommended"] = True
-                return
-        # heuristic: fewest transfers + lowest fare + shortest walk + earliest arrival
-        def score(o):
-            walk_km = o["distanceKm"] if o["mode"] == "walk" else 0.0
-            return (o.get("fare") or 0) * 2 + walk_km * 12 + (o.get("arrivalMin") or now_min)
-        best = min(options, key=score)
+        # rule: a walk is THE top only when it actually lands you near the destination
+        # (short final leg). For a long journey, walking to an adjacent stop is NOT
+        # the actionable recommendation — let a transit hop win (§20 #38).
+        if walk_cands:
+            nearest = min(walk_cands, key=lambda c: c["dist_m"])
+            if nearest["dist_m"] <= WALK_PRIMARY_M:
+                near_dest = _hav(nearest["lat"], nearest["lng"], dest_lat, dest_lng) <= WALK_PRIMARY_M * 2
+                if near_dest:
+                    walk_opt = next((o for o in options if o["mode"] == "walk"
+                                     and o["destinationStop"]["name"] == nearest["name"]), None)
+                    if walk_opt:
+                        walk_opt["isTopRecommended"] = True
+                        return
+        # long journey: prefer the hop that makes the most progress toward the
+        # destination (reaches the farthest), tie-broken by cost/arrival/walk.
+        transit = [o for o in options if o["mode"] in ("bus", "metro", "train")]
+        if transit:
+            def progress(o):
+                ds = o.get("destinationStop") or {}
+                rem = _hav(ds.get("lat", 0), ds.get("lng", 0), dest_lat, dest_lng)
+                return (rem, (o.get("fare") or 0) * 2 + (o.get("arrivalMin") or now_min))
+            best = min(transit, key=progress)
+        else:
+            def score(o):
+                walk_km = o["distanceKm"] if o["mode"] == "walk" else 0.0
+                return (o.get("fare") or 0) * 2 + walk_km * 12 + (o.get("arrivalMin") or now_min)
+            best = min(options, key=score)
         best["isTopRecommended"] = True
 
     def _probes_for_segment(self, seg: dict, destination: dict, group_size, budget) -> list[dict]:
@@ -837,6 +903,13 @@ class SegmentBuilder:
             if r.name.lower() == name.lower():
                 return {"name": r.name, "lat": r.lat, "lng": r.lng, "kind": "rail"}
         return None
+
+    @staticmethod
+    def _chosen_stop_key(leg: dict) -> str:
+        """Normalized stop key from a chosen_legs entry (dict|str destinationStop)."""
+        s = leg.get("destinationStop") if isinstance(leg, dict) else None
+        name = s.get("name") if isinstance(s, dict) else str(s or "")
+        return name.strip().lower()
 
     @staticmethod
     def _parse_hhmm(value) -> int | None:

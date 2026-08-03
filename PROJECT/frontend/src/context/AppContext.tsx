@@ -41,6 +41,11 @@ interface AppState {
   ridePath: Coord[] | null;
   setRidePath: (p: Coord[] | null) => void;
 
+  flowOpen: boolean;
+  setFlowOpen: (v: boolean) => void;
+  flowParams: { groupSize: number; budget: number };
+  setFlowParams: (p: { groupSize: number; budget: number }) => void;
+
   liveContext: LiveContext | null;
   setLiveContext: (c: LiveContext | null) => void;
 
@@ -68,6 +73,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [prices, setPrices] = useState<RidePrice[]>([]);
   const [ridePath, setRidePath] = useState<Coord[] | null>(null);
+  const [flowOpen, setFlowOpen] = useState(false);
+  const [flowParams, setFlowParams] = useState({ groupSize: 1, budget: 500 });
   const [liveContext, setLiveContext] = useState<LiveContext | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [journey, setJourneyState] = useState<JourneyState>({
@@ -101,12 +108,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     places, setPlaces,
     selected, setSelected, showDiscovery, setShowDiscovery,
     prices, setPrices, ridePath, setRidePath,
+    flowOpen, setFlowOpen, flowParams, setFlowParams,
     liveContext, setLiveContext,
     news, setNews,
     journey, setJourney,
     flyTo, setFlyTo,
   }), [mode, dark, userLoc, source, dest, weather, places, selected, showDiscovery,
-      prices, ridePath, liveContext, news, journey, flyTo]);
+      prices, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

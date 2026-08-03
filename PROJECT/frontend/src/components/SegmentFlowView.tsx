@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
-import type { HopOption, Segment, SegmentResponse } from "../types";
+import type { HopOption, LatLng, Segment, SegmentResponse } from "../types";
 import "./SegmentFlowView.css";
 
 const MODE_META: Record<string, { icon: string; color: string; label: string }> = {
@@ -26,6 +26,17 @@ function timeToMin(t?: string): number | null {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
+// straight-line km between a stop and the final destination (progress indicator)
+function havKm(a: { lat: number; lng: number } | undefined, b: LatLng | null): number | null {
+  if (!a || !b) return null;
+  const R = 6371;
+  const dLa = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLo = ((b.lng - a.lng) * Math.PI) / 180;
+  const s = Math.sin(dLa / 2) ** 2 +
+    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * Math.sin(dLo / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+}
+
 function dedupeOptions(options: HopOption[]): HopOption[] {
   const seen = new Set<string>();
   const out: HopOption[] = [];
@@ -45,24 +56,31 @@ function dedupeOptions(options: HopOption[]): HopOption[] {
 }
 
 // client-side filter for a hop column: options must connect from the previously
-// chosen stop and depart after its arrival + catch buffer (PROMPT_3 §T3)
+// chosen stop, depart after its arrival + catch buffer, and never route back to a
+// stop already on the journey (PROMPT_3 §T3 + §20 #37)
 function optionsForLevel(seg: Segment | undefined, confirmedUpTo: HopOption[], idx: number): HopOption[] {
   if (!seg) return [];
   const prev = idx > 0 ? confirmedUpTo[idx - 1] : null;
   const prevStop = prev?.destinationStop?.name?.toLowerCase();
   const prevArr = timeToMin(prev?.arrivalTime);
-  let opts = seg.options ?? [];
-  if (prevStop) {
-    opts = opts.filter((o) => {
+  const visited = new Set<string>();
+  for (const c of confirmedUpTo) {
+    const n = c.destinationStop?.name?.toLowerCase();
+    if (n) visited.add(n);
+  }
+  let opts = (seg.options ?? []).filter((o) => {
+    if (prevStop) {
       const cf = o.connectedFrom?.toLowerCase();
       if (cf && cf !== prevStop) return false;
       if (prevArr != null) {
         const d = timeToMin(o.departureTime);
         if (d != null && d < prevArr + CATCH_BUFFER_MIN) return false;
       }
-      return true;
-    });
-  }
+    }
+    const dn = o.destinationStop?.name?.toLowerCase();
+    if (dn && visited.has(dn)) return false; // don't circle back to a used stop
+    return true;
+  });
   return dedupeOptions(opts).slice(0, MAX_VISIBLE);
 }
 
@@ -245,6 +263,12 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
                     {opt.distanceKm != null && opt.distanceKm > 0 && (
                       <span className="small muted">{opt.distanceKm.toFixed(1)} km</span>
                     )}
+                    {(() => {
+                      const dk = havKm(opt.destinationStop, dest);
+                      return dk != null
+                        ? <span className="small dest-progress">→ {dk.toFixed(1)} km to dest</span>
+                        : null;
+                    })()}
                   </div>
                   <div className="spread">
                     {opt.departureTime && <span className="muted small">⏱ {opt.departureTime}</span>}
