@@ -83,6 +83,14 @@ export interface RidePrice {
   note?: string;
 }
 
+export interface DriveRoute {
+  geometry: Coord[];
+  distance_m: number;
+  duration_s: number;
+  path_source: string;
+  mode: string;
+}
+
 // ============================================================ routes / segments
 export interface PlaceModel {
   lat: number;

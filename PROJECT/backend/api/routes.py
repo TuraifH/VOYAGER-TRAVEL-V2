@@ -44,7 +44,8 @@ class SegmentsRequest(BaseModel):
 class ChosenLeg(BaseModel):
     optionId: str = ""
     arrivalTime: str | None = None
-    destinationStop: str = ""
+    # the backend emits destinationStop as {name,lat,lng}; accept both shapes
+    destinationStop: dict | str = {}
 
 
 class SegmentNextRequest(BaseModel):
@@ -76,6 +77,30 @@ class RidesRequest(BaseModel):
     origin: PlaceModel
     destination: PlaceModel
     group_size: int = Field(default=1, ge=1)
+
+
+class DriveRequest(BaseModel):
+    origin: PlaceModel
+    destination: PlaceModel
+
+
+@search_router.post("/routes/drive")
+def drive_route(req: DriveRequest):
+    """GraphHopper car route -> {geometry, distance_m, duration_s, path_source}.
+
+    Used by the A->B panel so a drive/ride path renders on the map (the browser
+    never talks to GraphHopper directly). Falls back to a straight line flagged
+    `interpolated` when the container is down.
+    """
+    gh = app_state.get_gh()
+    result = gh.route("car", req.origin.lat, req.origin.lng,
+                      req.destination.lat, req.destination.lng)
+    if not result:
+        return {"geometry": [[req.origin.lat, req.origin.lng],
+                             [req.destination.lat, req.destination.lng]],
+                "distance_m": 0.0, "duration_s": 0.0, "path_source": "interpolated",
+                "mode": "car"}
+    return result.model_dump(mode="json")
 
 
 @router.post("/segments")

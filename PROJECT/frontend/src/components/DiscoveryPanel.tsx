@@ -3,7 +3,9 @@ import "./DiscoveryPanel.css";
 
 function photoUrl(place: { photo_name?: string | null }): string | undefined {
   if (!place.photo_name) return undefined;
-  // frontend fetches with the API key in the query — real photo only
+  // SerpAPI hits come with a ready-to-fetch image URL; Google photo refs are
+  // proxied server-side to keep the key out of the browser.
+  if (place.photo_name.startsWith("http")) return place.photo_name;
   return `/api/photo?name=${encodeURIComponent(place.photo_name)}`;
 }
 

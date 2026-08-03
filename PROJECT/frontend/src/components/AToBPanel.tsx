@@ -91,7 +91,7 @@ function RideCard({ p, onSelect }: { p: RidePrice; onSelect: (p: RidePrice) => v
 }
 
 export default function AToBPanel() {
-  const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces } = useApp();
+  const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces, setRidePath } = useApp();
   const [travelMode, setTravelMode] = useState<TravelMode>("public");
   const [subMode, setSubMode] = useState<SubMode>("transit");
   const [srcName, setSrcName] = useState("");
@@ -141,16 +141,27 @@ export default function AToBPanel() {
     if (!source || !dest) return;
     setLoading(true);
     try {
-      // GraphHopper driving route -> fuel cost from distance
-      const resp = await fetch(`http://localhost:8080/route?point=${source.lat},${source.lng}&point=${dest.lat},${dest.lng}&profile=car&points_encoded=false`);
-      const data = await resp.json();
-      const distKm = (data?.paths?.[0]?.distance ?? 0) / 1000;
+      const route = await api.driveRoute(source, dest);
+      setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
+      const distKm = (route.distance_m ?? 0) / 1000;
       const fuel = (110.0 * distKm) / mileage;
       setFuelCost(Math.round(fuel * 100) / 100);
     } catch {
       setFuelCost(null);
+      setRidePath(null);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const selectRide = async (p: RidePrice) => {
+    if (!source || !dest) return;
+    setFlyTo(dest);
+    try {
+      const route = await api.driveRoute(source, dest);
+      setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
+    } catch {
+      setRidePath(null);
     }
   };
 
@@ -212,11 +223,11 @@ export default function AToBPanel() {
 
       {travelMode === "public" && subMode === "ride" && rides.length > 0 && (
         <div className="rides">
-          {rides.map((p, i) => <RideCard key={i} p={p} onSelect={() => setFlyTo(dest!)} />)}
+          {rides.map((p, i) => <RideCard key={i} p={p} onSelect={() => selectRide(p)} />)}
         </div>
       )}
 
-      {showFlow && <SegmentFlowView />}
+      {showFlow && <SegmentFlowView groupSize={groupSize} budget={budget} />}
     </div>
   );
 }

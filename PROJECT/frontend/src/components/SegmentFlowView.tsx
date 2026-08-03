@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
-import type { HopOption, Segment } from "../types";
+import type { HopOption, Segment, SegmentResponse } from "../types";
 import "./SegmentFlowView.css";
 
 const MODE_META: Record<string, { icon: string; color: string; label: string }> = {
@@ -16,91 +16,145 @@ function legColor(mode: string): string {
   return MODE_META[mode]?.color ?? "#6c5ce7";
 }
 
-export default function SegmentFlowView() {
+const MAX_VISIBLE = 10;
+const CATCH_BUFFER_MIN = 4; // catch-the-bus buffer (PROMPT_3 §3.2)
+
+function timeToMin(t?: string): number | null {
+  if (!t) return null;
+  const m = t.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function dedupeOptions(options: HopOption[]): HopOption[] {
+  const seen = new Set<string>();
+  const out: HopOption[] = [];
+  for (const o of options) {
+    const key = `${o.mode}|${o.routeNumber ?? ""}|${(o.destinationStop?.name ?? "").toLowerCase()}|${o.departureTime ?? ""}|${o.fromStop?.name ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(o);
+  }
+  const rankMode = (m?: string) => (m === "bus" || m === "metro" || m === "train" ? 1 : 0);
+  out.sort((a, b) => {
+    const ta = Number(b.isTopRecommended ?? false) - Number(a.isTopRecommended ?? false);
+    if (ta !== 0) return ta;
+    return rankMode(b.mode) - rankMode(a.mode);
+  });
+  return out;
+}
+
+// client-side filter for a hop column: options must connect from the previously
+// chosen stop and depart after its arrival + catch buffer (PROMPT_3 §T3)
+function optionsForLevel(seg: Segment | undefined, confirmedUpTo: HopOption[], idx: number): HopOption[] {
+  if (!seg) return [];
+  const prev = idx > 0 ? confirmedUpTo[idx - 1] : null;
+  const prevStop = prev?.destinationStop?.name?.toLowerCase();
+  const prevArr = timeToMin(prev?.arrivalTime);
+  let opts = seg.options ?? [];
+  if (prevStop) {
+    opts = opts.filter((o) => {
+      const cf = o.connectedFrom?.toLowerCase();
+      if (cf && cf !== prevStop) return false;
+      if (prevArr != null) {
+        const d = timeToMin(o.departureTime);
+        if (d != null && d < prevArr + CATCH_BUFFER_MIN) return false;
+      }
+      return true;
+    });
+  }
+  return dedupeOptions(opts).slice(0, MAX_VISIBLE);
+}
+
+export default function SegmentFlowView({ groupSize, budget }: { groupSize?: number; budget?: number }) {
+  const gs = groupSize ?? 1;
+  const bg = budget ?? 500;
   const { source, dest, journey, setJourney, setFlyTo } = useApp();
-  const [segments, setSegments] = useState<Segment[]>(journey.segments?.segments ?? []);
+  const [levels, setLevels] = useState<Segment[]>(journey.segments?.segments ?? []);
   const [confirmed, setConfirmed] = useState<HopOption[]>(journey.chosenLegs as HopOption[]);
-  const [loadingNext, setLoadingNext] = useState(false);
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [complete, setComplete] = useState(journey.segments?.journeyComplete ?? false);
-  const [selectedPerColumn, setSelectedPerColumn] = useState<Record<number, HopOption | null>>({});
+  const [warnings, setWarnings] = useState<string[]>(journey.segments?.warnings ?? []);
 
   const loadInitial = async () => {
     if (!source || !dest) return;
-    setLoadingNext(true);
+    setLoading(true);
     try {
-      const r = await api.routeSegments(source, dest, 1, 500);
-      setSegments(r.segments);
-      setComplete(r.journeyComplete);
-      setJourney({ segments: r });
+      const r = await api.routeSegments(source, dest, gs, bg);
+      setLevels(r.segments ?? []);
+      setComplete(!!r.journeyComplete);
+      setWarnings(r.warnings ?? []);
+      setJourney({ segments: r, chosenLegs: [] });
     } finally {
-      setLoadingNext(false);
+      setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (journey.segments?.segments?.length) {
-      setSegments(journey.segments.segments);
-    } else {
-      loadInitial();
-    }
+  useMemo(() => {
+    if (!journey.segments?.segments?.length) loadInitial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const connectFilter = (colIdx: number): Segment[] => {
-    const prevSelected = selectedPerColumn[colIdx - 1];
-    if (!prevSelected) return segments.slice(colIdx);
-    const ds = prevSelected.destinationStop?.name?.toLowerCase();
-    return segments.slice(colIdx).map((seg) => ({
-      ...seg,
-      options: seg.options.filter(
-        (o) => !ds || !o.connectedFrom || o.connectedFrom.toLowerCase() === ds,
-      ),
-    }));
-  };
+  const selectHop = async (idx: number, opt: HopOption) => {
+    const nextConfirmed = [...confirmed.slice(0, idx), opt];
+    setConfirmed(nextConfirmed);
+    setJourney({ chosenLegs: nextConfirmed });
 
-  const confirmHop = async (colIdx: number, opt: HopOption) => {
-    // selecting a hop resets all downstream selections (no ghost paths)
-    const nextSel = { ...selectedPerColumn };
-    for (const k of Object.keys(nextSel)) if (Number(k) > colIdx) delete nextSel[Number(k)];
-    nextSel[colIdx] = opt;
-    setSelectedPerColumn(nextSel);
-
-    // confirm into breadcrumb
-    const chosen = [...confirmed];
-    while (chosen.length > colIdx) chosen.pop();
-    chosen.push(opt);
-    setConfirmed(chosen);
-
+    // geometry is [lat, lng] — fly to the real end of the leg (never swapped)
     if (opt.geometry?.length) {
       const lastPt = opt.geometry[opt.geometry.length - 1];
-      setFlyTo({ lat: Number(lastPt[1]), lng: Number(lastPt[0]) });
+      setFlyTo({ lat: Number(lastPt[0]), lng: Number(lastPt[1]) });
     }
 
-    // lazy fetch when reaching the final pre-fetched column
-    if (colIdx >= segments.length - 1 && !complete) {
-      setLoadingNext(true);
-      try {
-        const r = await api.segmentNext(journey.segments?.journey ?? {}, chosen, 1, 500);
-        setSegments((prev) => [...prev, ...(r.segments ?? [])]);
-        setComplete(r.journeyComplete);
-        setJourney({ segments: r });
-      } finally {
-        setLoadingNext(false);
-      }
+    const nextIdx = idx + 1;
+    const prefetched = levels[nextIdx];
+    const prefetchCount = optionsForLevel(prefetched, nextConfirmed, nextIdx).length;
+    if (prefetched && prefetchCount > 0) {
+      // fast client-side advance (pre-fetched segment, PROMPT_3 §T3)
+      setCurrentIdx(nextIdx);
+      return;
+    }
+
+    // deeper hop or stale prefetch → time-chained fetch from the server
+    setLoading(true);
+    try {
+      const r: SegmentResponse = await api.segmentNext(journey.segments?.journey ?? {}, nextConfirmed, gs, bg);
+      const newLevels = [...levels.slice(0, nextIdx), ...(r.segments ?? [])];
+      setLevels(newLevels);
+      setComplete(!!r.journeyComplete);
+      if (r.warnings?.length) setWarnings(r.warnings);
+      setCurrentIdx(nextIdx);
+      setJourney({
+        segments: { ...(journey.segments ?? {}), segments: newLevels } as SegmentResponse,
+        chosenLegs: nextConfirmed,
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
-  const visibleCols = useMemo(() => {
-    const cols: { seg: Segment; idx: number }[] = [];
-    for (let i = 0; i < segments.length; i++) {
-      const filtered = connectFilter(i);
-      if (i === 0 || filtered[0]?.options?.length) {
-        cols.push({ seg: segments[i], idx: i });
-      }
-    }
-    return cols;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, selectedPerColumn]);
+  const goBack = () => {
+    const prevIdx = Math.max(0, currentIdx - 1);
+    setCurrentIdx(prevIdx);
+    setConfirmed(confirmed.slice(0, prevIdx));
+    setJourney({ chosenLegs: confirmed.slice(0, prevIdx) });
+    setLevels(levels.slice(0, prevIdx + 1));
+    setComplete(false);
+  };
+
+  const reset = () => {
+    setConfirmed([]);
+    setCurrentIdx(0);
+    setComplete(false);
+    setWarnings([]);
+    setJourney({ chosenLegs: [] });
+    loadInitial();
+  };
+
+  const seg = levels[currentIdx];
+  const shown = optionsForLevel(seg, confirmed, currentIdx);
+  const totalCount = seg?.options?.length ?? 0;
 
   const breadcrumb = useMemo(() => {
     const items: { label: string; mode?: string }[] = [];
@@ -111,30 +165,14 @@ export default function SegmentFlowView() {
     });
     if (dest && !complete) items.push({ label: dest.name || "Destination", mode: "walk" });
     return items;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, dest, confirmed, complete]);
 
-  const totalTime = useMemo(() =>
-    confirmed.reduce((a, c) => a + (c.durationMin ?? 0), 0),
-    [confirmed]);
-  const totalFare = useMemo(() =>
-    confirmed.reduce((a, c) => a + (c.fare ?? 0), 0),
-    [confirmed]);
-
-  const reset = () => {
-    setConfirmed([]);
-    setSelectedPerColumn({});
-    setSegments(journey.segments?.segments ?? []);
-    setComplete(false);
-  };
+  const totalTime = useMemo(() => confirmed.reduce((a, c) => a + (c.durationMin ?? 0), 0), [confirmed]);
+  const totalFare = useMemo(() => confirmed.reduce((a, c) => a + (c.fare ?? 0), 0), [confirmed]);
 
   return (
     <div className="flow-view">
-      {journey.active && (
-        <div className="live-banner glass-strong">
-          <span className="row"><span className="pulse-dot" /> <b>Journey active</b></span>
-        </div>
-      )}
-
       <div className="breadcrumb glass">
         {breadcrumb.map((b, i) => (
           <span key={i} className="crumb row">
@@ -145,64 +183,15 @@ export default function SegmentFlowView() {
         ))}
       </div>
 
-      <div className="columns">
-        {visibleCols.map(({ seg, idx }) => (
-          <div key={idx} className="hop-col">
-            <div className="col-head">
-              Segment {idx + 1}
-              <span className="muted small">({seg.options?.length ?? 0} options)</span>
-            </div>
-            <div className="hop-list">
-              {seg.options?.map((opt, oi) => {
-                const meta = MODE_META[opt.mode ?? ""] ?? MODE_META.bus;
-                const selected = selectedPerColumn[idx]?.optionId === opt.optionId;
-                const best = opt.isTopRecommended;
-                return (
-                  <button
-                    key={opt.optionId || oi}
-                    className={`hop-card glass hover-lift ${selected ? "selected" : ""} ${opt.mode === "walk" ? "walk" : ""}`}
-                    style={{ borderLeftColor: meta.color }}
-                    onClick={() => confirmHop(idx, opt)}
-                    onMouseEnter={() => {
-                      if (opt.geometry?.length) {
-                        const lastPt = opt.geometry[opt.geometry.length - 1];
-                        setFlyTo({ lat: Number(lastPt[1]), lng: Number(lastPt[0]) });
-                      }
-                    }}
-                  >
-                    <div className="spread">
-                      <span className="row">
-                        <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
-                        <b>{opt.mode === "walk" ? "Walk" : opt.routeNumber ?? meta.label}</b>
-                      </span>
-                      {best && <span className="badge gold">★ Top</span>}
-                    </div>
-                    <div className="small truncate mt4">
-                      → {opt.destinationStop?.name}
-                    </div>
-                    <div className="spread mt8">
-                      <span className="small">{opt.durationMin ?? "—"} min</span>
-                      {opt.distanceKm != null && opt.distanceKm > 0 && (
-                        <span className="small muted">{opt.distanceKm.toFixed(1)} km</span>
-                      )}
-                    </div>
-                    <div className="spread">
-                      {opt.departureTime && <span className="muted small">⏱ {opt.departureTime}</span>}
-                      <span className="small">{opt.fare != null ? `₹${opt.fare}` : opt.mode === "walk" ? "Free" : "—"}</span>
-                    </div>
-                    {opt.transitOptionsFromThisStop != null && (
-                      <div className="muted small mt4">↻ {opt.transitOptionsFromThisStop} onward options</div>
-                    )}
-                  </button>
-                );
-              })}
-              {loadingNext && <div className="skeleton hop-skel" />}
-            </div>
-          </div>
-        ))}
-      </div>
+      {warnings.length > 0 && (
+        <div className="warn-strip glass">
+          {warnings.map((w, i) => (
+            <div key={i} className="small"><span className="material-symbols-outlined">warning</span> {w}</div>
+          ))}
+        </div>
+      )}
 
-      {complete ? (
+      {complete && confirmed.length > 0 ? (
         <div className="complete glass-strong anim-scale">
           <div className="row">
             <span className="material-symbols-outlined done">check_circle</span>
@@ -216,11 +205,73 @@ export default function SegmentFlowView() {
           <button className="btn ghost mt12" onClick={reset}>Reset journey</button>
         </div>
       ) : (
-        confirmed.length > 0 && (
-          <button className="btn full mt8" onClick={() => setJourney({ active: true })}>
-            <span className="material-symbols-outlined">navigation</span> Start journey
-          </button>
-        )
+        <div className="hop-col">
+          <div className="col-head">
+            Hop {currentIdx + 1}
+            {seg?.title && <span className="muted small"> — {seg.title}</span>}
+            <span className="muted small">({totalCount} options)</span>
+          </div>
+
+          <div className="hop-list">
+            {shown.map((opt, oi) => {
+              const meta = MODE_META[opt.mode ?? ""] ?? MODE_META.bus;
+              const selected = confirmed[currentIdx]?.optionId === opt.optionId;
+              const best = opt.isTopRecommended;
+              return (
+                <button
+                  key={opt.optionId || oi}
+                  className={`hop-card glass hover-lift ${selected ? "selected" : ""} ${opt.mode === "walk" ? "walk" : ""}`}
+                  style={{ borderLeftColor: meta.color }}
+                  onClick={() => selectHop(currentIdx, opt)}
+                  onMouseEnter={() => {
+                    if (opt.geometry?.length) {
+                      const lastPt = opt.geometry[opt.geometry.length - 1];
+                      setFlyTo({ lat: Number(lastPt[0]), lng: Number(lastPt[1]) });
+                    }
+                  }}
+                >
+                  <div className="spread">
+                    <span className="row">
+                      <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                      <b>{opt.mode === "walk" ? "Walk" : opt.routeNumber ?? meta.label}</b>
+                    </span>
+                    {best && <span className="badge gold">★ Top</span>}
+                  </div>
+                  <div className="small truncate mt4">
+                    → {opt.destinationStop?.name}
+                  </div>
+                  <div className="spread mt8">
+                    <span className="small">{opt.durationMin ?? "—"} min</span>
+                    {opt.distanceKm != null && opt.distanceKm > 0 && (
+                      <span className="small muted">{opt.distanceKm.toFixed(1)} km</span>
+                    )}
+                  </div>
+                  <div className="spread">
+                    {opt.departureTime && <span className="muted small">⏱ {opt.departureTime}</span>}
+                    <span className="small">{opt.fare != null ? `₹${opt.fare}` : opt.mode === "walk" ? "Free" : "—"}</span>
+                  </div>
+                  {opt.transitOptionsFromThisStop != null && (
+                    <div className="muted small mt4">↻ {opt.transitOptionsFromThisStop} onward options</div>
+                  )}
+                </button>
+              );
+            })}
+            {loading && <div className="skeleton hop-skel" />}
+            {!loading && shown.length === 0 && (
+              <div className="muted small mt8">No onward options from this stop before the catch window.</div>
+            )}
+          </div>
+
+          {confirmed.length > 0 && (
+            <div className="row mt8 gap">
+              <button className="btn ghost" onClick={goBack}>‹ Undo hop</button>
+              <button className="btn ghost" onClick={reset}>Reset</button>
+              <button className="btn full" onClick={() => setJourney({ active: true })}>
+                <span className="material-symbols-outlined">navigation</span> Start journey
+              </button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -27,9 +27,13 @@ function PlaceCard({ place, index, onPick, onDetails, onNavigate }: {
             <div className="muted small">{place.primary_type ?? place.types?.[0] ?? ""}</div>
           </div>
         </div>
-        <span className={`score-pill ${cls}`}>
-          {place.business_status === "OPERATIONAL" ? "open" : place.business_status ?? "unknown"}
-        </span>
+        {place.business_status ? (
+          <span className={`score-pill ${place.business_status === "OPERATIONAL" ? "green" : cls}`}>
+            {place.business_status === "OPERATIONAL" ? "open" : place.business_status.replaceAll("_", " ").toLowerCase()}
+          </span>
+        ) : place.rating != null ? (
+          <span className={`score-pill ${cls}`}>★ {place.rating}</span>
+        ) : null}
       </div>
       <div className="muted small truncate mt8">{place.address}</div>
       <div className="spread mt8">

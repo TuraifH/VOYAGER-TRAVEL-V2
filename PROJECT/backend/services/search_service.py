@@ -25,8 +25,22 @@ class SearchService:
         self.reviews = ReviewTools(serpapi)
 
     def search_places(self, query: str, lat: float | None = None, lng: float | None = None) -> list[Place]:
-        """Text search, verified + deduped + Bangalore-filtered (see client)."""
-        return [_to_place(d) for d in self.maps.search_places(query, lat=lat, lng=lng)]
+        """Text search, verified + deduped + Bangalore-filtered (see client).
+
+        When Google Places billing is off the client falls back to OSM results
+        (no ratings, no Google `place_id`). We then try SerpAPI's google_maps
+        search to surface the REAL Google place (rating + place_id) so the
+        details flow can pull reviews. Nothing is fabricated — if SerpAPI is
+        also unavailable we return the OSM hits as-is.
+        """
+        places = [_to_place(d) for d in self.maps.search_places(query, lat=lat, lng=lng)]
+        if not places or all(p.rating is None for p in places):
+            serp = self.serpapi.search_place(query, lat=lat, lng=lng)
+            if serp and serp.get("place_id"):
+                p = _serp_to_place(serp, query)
+                if p:
+                    places = [p] + [x for x in places if x.place_id != p.place_id]
+        return places
 
     def nearby(
         self,
@@ -37,7 +51,16 @@ class SearchService:
         categories: list[str] | None = None,
     ) -> list[Place]:
         cat = (categories[0] if categories else "") or keyword
-        return [_to_place(d) for d in self.maps.nearby_places(lat, lng, radius_m, cat)]
+        places = [_to_place(d) for d in self.maps.nearby_places(lat, lng, radius_m, cat)]
+        if not places or all(p.rating is None for p in places):
+            serp = self.serpapi.search_place(cat, lat=lat, lng=lng)
+            if serp and serp.get("place_id"):
+                p = _serp_to_place(serp, cat)
+                if p:
+                    p.distance_km = round(
+                        _haversine_km(lat, lng, p.lat, p.lng), 2)
+                    places = [p] + [x for x in places if x.place_id != p.place_id]
+        return places
 
     def enrich(self, place: Place) -> dict:
         """Enriched details for one place: real reviews + reliability + summary."""
@@ -71,3 +94,32 @@ class SearchService:
 def _to_place(d: dict) -> Place:
     """Client raw dict -> Place model (extra keys like phone/website dropped)."""
     return Place(**{k: v for k, v in d.items() if k in Place.model_fields})
+
+
+def _serp_to_place(d: dict, query: str) -> Place | None:
+    """SerpAPI google_maps search hit -> Place. None when it has no place_id/coords."""
+    pid = d.get("place_id")
+    lat, lng = d.get("lat"), d.get("lng")
+    if not pid or lat is None or lng is None:
+        return None
+    return Place(
+        place_id=str(pid),
+        name=d.get("title") or query,
+        address=d.get("address") or "",
+        lat=float(lat),
+        lng=float(lng),
+        rating=d.get("rating"),
+        user_rating_count=d.get("reviews") if isinstance(d.get("reviews"), int) else None,
+        primary_type=d.get("type"),
+        query=query,
+    )
+
+
+def _haversine_km(lat1, lng1, lat2, lng2) -> float:
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))

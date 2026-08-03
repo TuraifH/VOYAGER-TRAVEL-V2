@@ -131,7 +131,8 @@ class SegmentBuilder:
                     "journeyComplete": False, "timeline": []}
 
         last = chosen_legs[-1]
-        stop_name = last["destinationStop"]
+        stop = last.get("destinationStop") or {}
+        stop_name = stop.get("name") if isinstance(stop, dict) else str(stop)
         anchor = self._resolve_stop(stop_name)
         arrival_min = self._parse_hhmm(last.get("arrivalTime")) or 0
         now_min = int(arrival_min + BUFFER_MIN)

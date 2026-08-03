@@ -37,19 +37,33 @@ def summarize(review_texts: list[str], score_pct: int) -> SummaryResult | None:
 
 
 def _call_openai_compat(review_texts, score_pct, api_key) -> SummaryResult:
+    """OpenRouter (primary) -> Gemini (fallback). Never fails loudly: returns
+    the deterministic headline when neither provider is available."""
+    try:
+        if config.env_str("OPENROUTER_API_KEY"):
+            return _summarize_with(
+                api_key=config.env_str("OPENROUTER_API_KEY"),
+                base_url=config.env_str("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                model=config.env_str("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+                review_texts=review_texts, score_pct=score_pct,
+            )
+    except Exception as exc:  # noqa: BLE001 — OpenRouter out of credits / down
+        logger.warning("[llm] OpenRouter summary failed: %s", exc)
+    if config.env_str("GEMINI_API_KEY"):
+        return _summarize_with(
+            api_key=config.env_str("GEMINI_API_KEY"),
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model=config.env_str("GEMINI_MODEL", "gemini-2.0-flash"),
+            review_texts=review_texts, score_pct=score_pct,
+        )
+    raise RuntimeError("no LLM provider available")
+
+
+def _summarize_with(api_key: str, base_url: str, model: str,
+                    review_texts: list[str], score_pct: int) -> SummaryResult:
     import openai
 
-    base = config.env_str("OPENROUTER_BASE_URL", "")
-    client_kwargs: dict = {"api_key": api_key}
-    if base:
-        client_kwargs["base_url"] = base
-    model = config.env_str("LLM_MODEL", "gpt-4o-mini")
-
-    if config.env_str("GEMINI_API_KEY") and not config.env_str("OPENROUTER_API_KEY"):
-        client_kwargs["base_url"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        model = config.env_str("LLM_MODEL", "gemini-2.0-flash")
-
-    client = openai.OpenAI(**client_kwargs)
+    client = openai.OpenAI(api_key=api_key, base_url=base_url, timeout=20)
     blob = json.dumps([{"text": t} for t in review_texts], ensure_ascii=False)[:14000]
 
     system = (
@@ -63,6 +77,7 @@ def _call_openai_compat(review_texts, score_pct, api_key) -> SummaryResult:
     resp = client.chat.completions.create(
         model=model,
         temperature=0.2,
+        max_tokens=256,
         response_format={"type": "json_object"},
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
         timeout=20,

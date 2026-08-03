@@ -8,9 +8,15 @@
 > detail, every problem we hit and the better option we chose so it never regresses, all 104
 > tests, performance budgets, the Docker setup, and exactly what to do next.
 >
-> Written: 2026-08-01. Last updated: 2026-08-02 (PROMPT_1–7 DONE, 104 tests green,
-> search/CORS/location-buttons fixes merged).
+> Written: 2026-08-01. Last updated: 2026-08-03 (PROMPT_1–7 DONE, 104 tests green; 2026-08-03
+> hardening session merged: map-fly-away root cause fixed, progressive hop builder, SerpAPI rating
+> fallback, OSM→Google place resolution, LLM provider chain (OpenRouter→Gemini), `/routes/drive`,
+> CSS stacking-context fixes).
 > Source of truth: this file + `PROJECT/` — **self-contained; no external folder is referenced.**
+>
+> **READ §19.4 first** — it is the latest recorded session (2026-08-03) and explains exactly what
+> broke, why, and what we chose instead so it never regresses. §28–§31 are the full deep-dive
+> anatomy + current run state + next-actions master plan.
 
 ## ⚠️ FRESH-START MIGRATION (READ FIRST)
 
@@ -66,6 +72,10 @@
 25. Appendix A — Full API Endpoint Reference
 26. Appendix B — Key Constants (radii, speeds, fares, budgets)
 27. Appendix C — Honest-Fallbacks & Deliberate Decisions (the "no fake data" map)
+28. Deep-Dive Anatomy — every pipeline, step by step, with REAL example outputs
+29. The 2026-08-03 Hardening Session — decisions summary (full record in §19.4 / §20 #26–36)
+30. Current Run State — ports, PIDs, proxy, Docker, and a full verify checklist
+31. Next Actions Master Plan — Docker (why), Google billing, live rides, PROMPT_8/9, QA loop
 
 ---
 
@@ -300,15 +310,20 @@ VOYAGER_2/                                         ← NEW clean repo root (C:\U
 | 9 | PROMPT_9 | Deployment (Render free + Neon) | 🔲 PLANNED (design locked) |
 
 **Current state: prompts 1–7 fully implemented and tested.**
-- Backend: **104 pytest pass** (`python -m pytest tests/ -q` in ~37s, no Docker/API required).
-  Files: `test_data_layer.py` (12), `test_route_finder.py` (10), `test_segment_builder.py` (14),
-  `test_prompt4.py` (33), `test_prompt5.py` (20), `test_traffic_model.py` (9), `test_no_fake_data.py` (6).
+- Backend: **104 pytest pass** (`python -m pytest tests/ -q` in ~63s on OneDrive-synced disk, no
+  Docker/API required). Files: `test_data_layer.py` (12), `test_route_finder.py` (10),
+  `test_segment_builder.py` (14), `test_prompt4.py` (33), `test_prompt5.py` (20),
+  `test_traffic_model.py` (9), `test_no_fake_data.py` (6).
 - Frontend: `npx tsc --noEmit` zero errors; dev server :3000; axios talks to `http://localhost:8000/api`
   directly + **CORS middleware** added in `backend/main.py` (see §20 #24).
 - Prompt 7 (ML + integration + fake-data audit) **DONE**: traffic model + `traffic-model-info` endpoint
   + benchmark all within budget. Prompts 8–9 fully *specified* (see §24) — build order is 8 → 9.
-- Latest merge: **search/CORS/location-buttons fixes** (Google 403 → OSM fallback, §20 #23–25) + the
-  **Bangalore PBF committed** so fresh clones are fully self-contained.
+- **2026-08-03 hardening session (merged, uncommitted working tree at last check):** map fly-away
+  root cause (lat/lng swap), progressive hop builder (PROMPT_3-faithful single-window build),
+  SerpAPI rating fallback for OSM places, OSM→Google place-id resolution in enrich, OpenRouter
+  base-URL + credit-credit fixes with Gemini fallback, new `POST /api/routes/drive`, CSS
+  stacking-context fix for the details panel, "no fake unknown" search pill, honest ride-fare note.
+  Full record in §29; every new problem→choice in §20 #26+.
 
 ---
 
@@ -339,13 +354,20 @@ build printed at init).
 ### 8.2 Request flow
 - **A→B transit**: `POST /api/routes/segments` → `builder.build_segments(...)` → Segment 1 FULL +
   Segment 2 FULL + probes. `POST /api/routes/segment-next` → time-chained next segment or
-  journey-complete.
+  journey-complete. The frontend consumes this as a **progressive hop builder** (one hop column at a
+  time — see §14.11 / §28.4).
+- **A→B drive**: `POST /api/routes/drive` → `app_state.get_gh().route("car", ...)` → real
+  GraphHopper road polyline + distance/duration (`DriveRoute`). Used by AToBPanel "Estimate drive"
+  and "select ride" to draw the drive path on the map.
 - **Search**: `GET /api/search/places|nearby` → `search_service` → **Google Places (New) first,
-  then OpenStreetMap Nominatim fallback** (when Google returns empty/401/403 — §20 #23) → filtered
-  → `Place[]`. `POST /api/search/enrich` → `review_tools.enrich_place` → SerpAPI reviews →
-  sentiment → reliability → LLM summary → `PlaceDetails`.
+  then OpenStreetMap Nominatim fallback** (when Google returns empty/401/403 — §20 #23). Since
+  2026-08-03: **if OSM results have no rating, a SerpAPI `search_place` fallback runs** to try to
+  attach a real Google rating (see §20 #28, §29). `POST /api/search/enrich` → `review_tools.enrich_place`
+  → **resolves the OSM place_id to a real Google `ChIJ…` via SerpAPI** (see §20 #29, §29), then
+  SerpAPI reviews → sentiment → reliability → LLM summary → `PlaceDetails`.
 - **Rides**: `POST /api/rides/prices` → `search_service.ride_prices` → Google Directions distance
-  → ride_pricing estimate ladder (surge).
+  → ride_pricing estimate ladder (surge). (Live SerpAPI overlay implemented in ride_pricing but not
+  yet wired into the service path — see §24.)
 - **Live context**: `POST /api/langgraph/route-context` → `agent.gather_route_context` → parallel
   weather/traffic/news/prices (+reviews if place) → `LiveContext` dict.
 - **News**: `GET /api/search/news` → `news_engine.relevant` (from background loop cache).
@@ -353,7 +375,8 @@ build printed at init).
 - **Trains**: `GET /api/routes/live-trains` → `train_service.trains_between` (live or flagged
   fallback).
 - **Photo**: `GET /api/search/photo?name=…` → 307 redirect to real Google photo URL (key stays
-  server-side).
+  server-side). SerpAPI thumbnails (photo_name beginning `http`) are rendered directly by the
+  frontend (see §20 #36).
 
 ---
 
@@ -541,12 +564,21 @@ arrivalMin`, min wins.
 - **Metro hubs**: Majestic carries both lines; both directions offered.
 - **Cache**: 5-min TTL; second call <50ms identical.
 
-### 11.8 The frontend contract for this window (PROMPT_6 §9)
+### 11.8 The frontend contract for this window (PROMPT_6 §9 + 2026-08-03 redesign)
 Breadcrumb `Source → [bus 507-D] → Kogilu Cross → [KIA-9] → Majestic → [Purple] → … →
-Destination`. Columns render from `/api/routes/segments`; selecting a hop filters the NEXT column
-client-side by `connectedFrom`; changing an earlier column **resets downstream selections**; deeper
-columns lazily call `segment-next`; confirmed hops accumulate geometry on the map;
-`journeyComplete` shows the arrival screen with full timeline + total + reset.
+Destination`.
+- **Original (superseded) design**: a wall of columns rendered at once, filtered client-side by
+  `connectedFrom`; selecting an earlier column reset downstream selections; deeper columns lazily
+  called `segment-next`. Problems the user reported: overwhelming 40-option columns with duplicates
+  and stale-looking times, and it did not feel like a guided "pick hop → build path" flow.
+- **2026-08-03 progressive redesign** (§14.11, §29): ONE hop column at a time — the current hop's
+  options. Selecting a hop (a) confirms it into the breadcrumb, (b) flies the map to the leg's real
+  end (correct `[lat,lng]`, never swapped), (c) advances to the next hop: if the next level is
+  pre-fetched it advances instantly via the client-side filter (connectedFrom + departure ≥
+  previous arrival + 4 min buffer, §T3), otherwise it lazily calls `segment-next` (time-chained,
+  server-authoritative) and appends the new level. Undo hop / Reset are always available.
+  `journeyComplete` shows the arrival screen (total time, ₹ total, leg count). Every confirmed leg
+  draws solid on the map (§14.7); pre-fetched alternatives draw faint/dashed.
 
 ---
 
@@ -804,18 +836,24 @@ toggle, location.
 - Icons (all `L.divIcon`): userIcon (blue pulsing dot, `.marker-user`), pinIcon(cls) (`.marker-pin`
   green/yellow/red, letter G/Y/R), numIcon(n), starIcon (selected), newsIcon(cat) (traffic #e74c3c,
   weather #3498db, event #f1c40f, general #95a5a6).
-- `FlyController` — `map.flyTo([lat,lng], max(zoom,14), {duration:0.9})` when target set.
-- `legGeometry(opt)` maps `[lng,lat]→[lat,lng]` (backend returns `[lat,lng]`; this swap keeps
-  Leaflet correct — the SegmentFlowView previously swapped the other way, the old bug).
-- `RoutePolylines` — one `<Polyline>` per option geometry (skips <2 pts); `approx` =
-  `geometrySource==="interpolated" || status==="estimated"` → `dashArray "6 6"` (walk always
-  dashed); weight 3 (walk) / 5; opacity 0.85. Connecting dashed line between source/dest when both.
+- `FlyController` — `map.flyTo([lat,lng], max(zoom,14), {duration:0.9})` when target set. Since
+  **2026-08-03** it refuses to fly to coordinates outside the Bengaluru box (12–14 lat, 76.5–78.5
+  lng) so a rogue coordinate can never yank the map away (§20 #26, #31).
+- `legGeometry(opt)` — **NO coordinate swap** (2026-08-03 fix): backend geometry is already
+  `[lat,lng]` and Leaflet wants `[lat,lng]`, so it returns `[Number(pt[0]), Number(pt[1])]`.
+  The old `[pt[1], pt[0]]` swap projected every line to ~77.5°N (the "random island / Arctic" bug).
+  See §20 #26.
+- `RoutePolylines` — one `<Polyline>` per option geometry (skips <2 pts); confirmed legs solid
+  weight 5, `isTopRecommended` solid, all others faint (weight 3, opacity 0.3, dashed `4 6`);
+  walk dashed. A separate solid polyline draws the **ridePath** (drive route). The old fake
+  dashed source→dest "connecting" line was removed (2026-08-03) — it painted over real geometry.
 - `Pins` — numbered places hidden during active journey; source = green pin, dest = red pin, star
   for selected; numbered pins colored by `business_status==="CLOSED_PERMANENTLY" ? red :
   scoreClass(rating*20)`; news pins only if `geo`; JourneyPosition = blue CircleMarker (radius 7).
-- `fitBounds` on journey segments (padding 40). OSM tiles.
-- Hover = CSS only (`.marker-pin:hover` scale 1.15). Hop-card hover pans the map (in
-  SegmentFlowView).
+- `fitBounds` on journey segments + ridePath (padding 40), and every point is filtered through the
+  Bengaluru-box guard so a single bad point cannot zoom the map out to "nowhere".
+- OSM tiles. Hover = CSS only. Hop-card hover/select pans the map (in SegmentFlowView, correct
+  coords).
 
 ### 14.8 `components/SearchPanel.tsx` + `.css`
 Two tabs: **Search specific** (text input, Enter/icon runs search; suggestions debounced 300ms when
@@ -844,31 +882,46 @@ map" (flyTo) + "Navigate here" (dest + atob). Loading skeleton. Position: absolu
 - `findRoutes`: public+ride → `api.ridePrices` → RideCards; public+transit → SegmentFlowView; drive
   → `api.ridePrices(src,dst,1)` for the estimate + fuel; walk → SegmentFlowView. Sets places [] and
   hides flow each new search.
-- **startDrive**: `fetch("http://localhost:8080/route?…&profile=car&points_encoded=false")` (real
-  GraphHopper) → `fuel = (110.0 * distKm) / mileage` → fuel card "Fuel cost ₹X at ₹110/L, Y km/L —
-  approximate".
+- **startDrive** (2026-08-03 rewrite): calls **`api.driveRoute(source, dest)`** → `POST
+  /api/routes/drive` → real GraphHopper car route (the OLD hardcoded `fetch("http://localhost:8080/route?…")`
+  is gone — it bypassed the backend, ignored error handling, and leaked a hardcoded URL) →
+  `setRidePath(geometry)` draws the drive path on the map → `fuel = (110.0 * distKm) / mileage` →
+  fuel card "Fuel cost ₹X at ₹110/L, Y km/L — approximate".
+- **selectRide(p)**: sets flyTo(dest), calls `api.driveRoute`, and draws the drive path via
+  `setRidePath` — so picking a ride card shows the actual road path immediately (§20 #35).
 - RideCard: provider, mode, `badge live|est`, ₹total (0dp), ₹pp/person, `• {eta_min} min`, note.
 - Primary button: "Estimate drive" / "Get ride prices" / "Find routes", disabled without src+dst.
 
-### 14.11 `components/SegmentFlowView.tsx` + `.css` — the multi-hop window
+### 14.11 `components/SegmentFlowView.tsx` + `.css` — the multi-hop window (progressive builder)
 - `MODE_META`: bus/metro/train/walk/ride → icon + color + label.
-- Loads `api.routeSegments(source,dest,1,500)` on mount if empty; state: segments, confirmed,
-  loadingNext, complete, selectedPerColumn.
-- **connectFilter(colIdx)**: if previous column has a selection, filter options where `connectedFrom`
-  absent or `=== prev.destinationStop.name` (case-insensitive). Column visibility: col 0 always;
-  later cols only if prior filtered col has ≥1 option.
-- **confirmHop(colIdx, opt)**: clears downstream selections + confirmed beyond colIdx, sets
-  selection, updates breadcrumb; **map pan** to `opt.geometry` last point; **lazy segmentNext** if
-  colIdx is last && !complete → `api.segmentNext(journey, chosen, 1, 500)`, append segments,
-  spinner skeleton while loading.
-- Breadcrumb: `Source → {routeNumber} {mode} → {destinationStop.name} → … → dest.name` with colored
-  crumb-dots.
-- Hop card: mode icon, routeNumber/Walk, `★ Top` gold badge when isTopRecommended, → stop, minutes,
-  km, ⏱ departure, ₹fare/"Free"/"—", ↻ onward options count. `onMouseEnter` pans to geometry last
-  point. Walk cards dashed border.
-- Complete banner: `"You reached {dest}!"` + total min + ₹ total + legs count + **Reset**; else if
-  confirmed>0 **Start journey** → setJourney({active:true}); when active a live-banner shows.
-- `totalTime/totalFare` from confirmed reduce.
+- **2026-08-03 redesign** (§11.8, §29): a **progressive hop builder**, not a wall of columns.
+  - State: `levels` (fetched hop segments, level `i` = options for hop `i`), `confirmed`
+    (`HopOption[]`, the built path), `currentIdx` (which hop the user is choosing now), `loading`,
+    `complete`, `warnings`.
+  - Init: reuse `journey.segments` if present, else `api.routeSegments(source,dest,groupSize,budget)`.
+  - `optionsForLevel(seg, confirmedUpTo, idx)` — client filter + dedupe + cap:
+    1. If `idx>0`, drop options whose `connectedFrom` is set and ≠ previous stop name
+       (case-insensitive).
+    2. Time chain: drop options whose `departureTime` (HH:MM) < previous `arrivalTime` + **4 min**
+       catch-the-bus buffer (PROMPT_3 §T3).
+    3. `dedupeOptions` key = `mode|routeNumber|destinationStop|departureTime|fromStop` (the
+       departure time in the key is what kills the duplicated rows the user saw — §29).
+    4. Sort: `isTopRecommended` first, then transit (bus/metro/train) over walk/ride; cap
+       `MAX_VISIBLE = 10`.
+  - `selectHop(idx, opt)`: truncate downstream confirmed, confirm into breadcrumb, **fly map to
+    `opt.geometry[last]` with CORRECT `[lat,lng]`** (the old `{lat: lastPt[1], lng: lastPt[0]}`
+    swap flew to ~77.5°N — §20 #31), then advance:
+    - If a next level is pre-fetched and its filtered count > 0 → instant client-side advance.
+    - Else → `api.segmentNext(journey, nextConfirmed, gs, bg)` → append/replace level, set
+      `complete`, `warnings`.
+  - `goBack()` (Undo hop) steps back one hop, truncating confirmed + levels; `reset()` reloads.
+  - Breadcrumb `Source → [507-D bus] → stop → … → Destination`; warnings strip; hop card shows
+    mode icon, routeNumber/Walk, `★ Top` gold badge, → stop, minutes, km, ⏱ departure, ₹fare /
+    "Free" / "—", ↻ onward count; hover pans (correct coords).
+  - Complete screen: "You reached {dest}!" + total min + ₹ total + legs + Reset; else when
+    confirmed>0 a row of **Undo hop / Reset / Start journey** buttons (`setJourney({active:true})`).
+- Note: `groupSize`/`budget` come from AToBPanel and are passed to both `routeSegments` and
+  `segmentNext` (previously hardcoded 1 / 500 — §29).
 
 ### 14.12 `components/TripPanel.tsx` + `.css`
 AI Travel Insights card, **Start journey / End** (watchPosition enableHighAccuracy, timeout 10s,
@@ -901,6 +954,21 @@ changeOrigin.
 
 ## 15. INTEGRATIONS DEEP-DIVE — WHAT, WHY, AND WHEN EACH IS USED
 
+**2026-08-03 LIVE STATUS TABLE (verify before relying on any integration):**
+
+| Integration | Key in `.env` | Live right now? | Note |
+|---|---|---|---|
+| GraphHopper (Docker :8080) | none | ✅ YES | Container `project-graphhopper-1`, gh 12.0, profiles car+foot; user starts Docker Desktop manually, then `docker compose up -d graphhopper` |
+| Google Maps Platform | `GOOGLE_MAPS_API_KEY` | ⛔ 403 (billing OFF) | Every Places/Geocoding call → 403; OSM fallback active; Google re-enables the moment billing is on |
+| SerpAPI | `SERPAPI_API_KEY` | ✅ YES | Real reviews, place resolution, rating fallback, live ride quotes; budget-sensitive (~250 searches/mo free, owner has friend keys ~1250/mo) |
+| OpenRouter | `OPENROUTER_API_KEY` | ⚠️ 402 (credits exhausted) | Base URL fixed (was wrong → 401, §20 #30); now **out of credits** → code auto-falls back to Gemini |
+| Gemini | `GEMINI_API_KEY` | ✅ YES (fallback) | OpenRouter 401/402 → Gemini; summary path must be re-verified live after the provider-chain fix (§29, §31) |
+| Open-Meteo | none | ✅ YES | weather |
+| eRail.in | none | ✅ YES (when reachable) | live trains, 48 codes; 7 city-pair fallbacks flagged |
+| Reddit r/bangalore + DDG | — | ✅ YES via DataImpulse | news loop |
+| DataImpulse proxy | `DATAIMPULSE_USER/PASS/HOST` | ✅ YES | IP rotation for anonymous scrapes only (§16) |
+| OSM Nominatim | none | ✅ YES (fallback) | search/nearby/geocode when Google 403 |
+
 ### 15.1 SerpAPI — Google Maps reviews + live ride prices (WHY: real reviews & live prices)
 - **Why integrated**: BMTC has no live API; Google's own review data is the only honest source of
   "is this place real/recommended". SerpAPI wraps Google Maps search/directions so we get
@@ -908,6 +976,18 @@ changeOrigin.
   (`ride_options`) without a full Google Places billing scare.
 - Auth: `SERPAPI_API_KEY` (API-key, **no proxy**). Free tier ~250 searches/mo; owner has friend
   keys (~1250/mo) — budget-sensitive (reviews capped ~10/place).
+- **2026-08-03 additions (WHY):**
+  - `search_place` **rating fallback** in `search_service.search_places` / `nearby`: when OSM
+    (Nominatim) results have **no rating**, one SerpAPI `search_place(q, cat, lat, lng)` call runs
+    and the top result's real Google rating + count + photo get attached (e.g. "Cubbon Park" → 4.4,
+    143,010 reviews, green pin). WHY: OSM gives coordinates but no ratings/photos, so the app
+    looked empty; SerpAPI restores the "is this place good" signal honestly.
+  - **OSM→Google place resolution** in `review_tools.enrich_place._resolve()`: enrich needs a
+    `ChIJ…` place_id for reviews, but search now often returns OSM `osm:…` ids; `_resolve()` calls
+    `serpapi.search_place` to find the real Google place_id (e.g. `osm:way22895320` → Cubbon Park
+    → `ChIJL2fQ53MWrjsRuN9D6aalLMY`), then reviews/enrichment work.
+  - `photoUrl` in DiscoveryPanel accepts `http`-prefixed SerpAPI thumbnail `photo_name` directly
+    (§20 #36).
 - **Past critical bug (FIXED, do-not-regress)**: `_parse_place_detail` used wrong response key
   `"place"` instead of `"place_results"`; reviews read from `place_results.reviews` (an **int
   count**) instead of `user_reviews.most_relevant`; fields `user.name`/`snippet` instead of
@@ -931,8 +1011,17 @@ changeOrigin.
 - `docker-compose.yml` (ONLY service in the file): image `israelhikingmap/graphhopper:latest`,
   ports `8080:8989`, volume `./gh-data:/data`, `java -Xmx2g -Xms1g -jar
   graphhopper-web-12.0-SNAPSHOT.jar server /data/config.yml`, restart unless-stopped.
-- Behavior: `route()` returns `None` on any failure → caller interpolates and **flags**
+- **2026-08-03 real-world lesson**: Docker Desktop is started manually by the user (not automatic),
+  and the container needs **~1–3 min on first boot to build the graph cache** (status "Up …
+  (unhealthy)" until `java` finishes; the healthcheck can lag behind the real readiness). GH serves
+  `/info` (profiles car, foot) once ready. `gh-data/config.yml` still lists
+  `custom_model_files: [car.json]/[foot.json]` but those files are missing — GH tolerates this and
+  runs with the default models, so **do NOT touch the config while the container is healthy** (the
+  earlier "GH won't start" prediction was wrong in practice).
+- `route()` returns `None` on any failure → caller interpolates and **flags**
   `path_source:"interpolated"` (dashed on map). 24h cache. `is_healthy()` via `/info`.
+- **New client path**: `POST /api/routes/drive` uses `app_state.get_gh().route("car", …)` —
+  the backend is the ONLY caller of GH for drive (no hardcoded :8080 fetch in the frontend — §20 #34).
 
 ### 15.4 Open-Meteo — weather (WHY: free, no key, honest)
 - Free API, no key. `current(lat,lng)` returns temp_c, WMO condition label, weather_code, humidity,
@@ -951,6 +1040,18 @@ changeOrigin.
 - **Why**: the product wants AI "why recommended" + review summaries + plain Hinglish route
   explanations. Chain: OpenRouter (`openai/gpt-4o-mini`) → Gemini (`gemini-2.0-flash`). JSON mode,
   temp 0.2, timeout 30.
+- **2026-08-03 provider-chain fixes (§20 #30, §29):**
+  - **401 bug (WRONG BASE URL)**: `llm_agent`/`review_summarizer` sent the `sk-or-…` key to
+    `platform.openai.com/v1` instead of `https://openrouter.ai/api/v1` → every call 401. Fixed:
+    base URL is `openrouter.ai/api/v1`.
+  - **402 credits bug**: OpenRouter now returns `402` ("…can only afford 17") because the account
+    has ~no credits. `review_summarizer` was rewritten with per-provider `try/except` +
+    `_summarize_with()` so an OpenRouter 401/402 **falls back to GEMINI** (via
+    `generativelanguage.googleapis.com/v1beta/openai/`); `max_tokens=256` (was 16384 → also
+    triggered the 402). Same chain exists in `llm_agent.chat_json`.
+  - **Never verified live yet**: after the rewrite + backend restart, the enrich summary was still
+    the deterministic fallback ("Based on 8 Google reviews (reliability 90%).") — the Gemini
+    fallback path needs one live enrich test (§31 item 2).
 - **Hard rule**: NEVER fares/timings/bus numbers/review text/reliability/news/scores. If both fail →
   deterministic fallback text. `review_summarizer` uses the same providers (timeout 20, 14k chars).
 
@@ -1130,6 +1231,112 @@ working tree, and a stuck reset. **Lessons:**
   folder (`robocopy <zipdir> <folder> /E /IS /IT`), or `git clone` when the network is reliable
   (LFS bytes come down on first pull). Only `.env` (secrets) still needs manual copy.
 
+### 19.4 2026-08-03 HARDENING SESSION — full record (the bugs, the choices, the verification)
+Trigger: the owner opened the running app (backend :8000, Vite :3000, GraphHopper :8080) and hit
+several visible breakages at once. Everything below was reproduced, root-caused, fixed, and
+verified against the LIVE stack.
+
+**19.4.1 "The search API we built… I guess it's missing"** → **NOT missing.**
+`/api/search/places` exists in `backend/api/routes.py` (committed), is registered via
+`app.include_router(search_router, prefix="/api")` in `backend/main.py:38`, and returns real OSM
+places live (`?q=mg road` → non-empty). Lesson: when a feature "disappears", check the running
+server first (`GET /api/health`) before assuming code is gone.
+
+**19.4.2 "The map goes on a RANDOM AREA instead of Bengaluru"** → **TWO separate coordinate swaps**
+(§20 #26 and #31). The one the owner hit while using the hop window:
+- `SegmentFlowView.tsx` (both `confirmHop` and `onMouseEnter`) flew to
+  `{ lat: lastPt[1], lng: lastPt[0] }` — but geometry is already `[lat, lng]`, so this flipped
+  Bengaluru (≈13°N, 77°E) into ≈77.5° lat (the Arctic). Clicking or even hovering any hop option
+  threw the map to the "random island".
+- `MapView.legGeometry` had the same `[pt[1], pt[0]]` swap (its own Arctic projection).
+**Choices made** (so it can never regress):
+1. `legGeometry` now returns `[Number(pt[0]), Number(pt[1])]` — identity, because backend already
+   sends `[lat, lng]` and Leaflet wants `[lat, lng]`.
+2. Every `setFlyTo` in `SegmentFlowView` uses `{ lat: lastPt[0], lng: lastPt[1] }`.
+3. `MapView` gained a **Bengaluru-box guard** (`inBengaluru`: 12–14 lat, 76.5–78.5 lng) applied in
+   both `FlyController` (refuses bad targets) and `fitBounds` (drops out-of-box points), so even a
+   rogue coordinate can never move the map away again.
+4. Removed the fake dashed "source→dest" connecting line in `RoutePolylines` — it painted a
+   straight line over real geometry and confused the user.
+
+**19.4.3 "Multi-hop is not what I wanted… SEE how a user chooses the path and BUILDS it."**
+The old UI showed a wall of columns (up to 40 options each) with duplicated rows and stale-looking
+schedules, and it didn't match PROMPT_3's "Google-Maps-like: 507-D, phir Kogilu Cross pe KIA-9…"
+guided flow. **Choices made:**
+- Rewrote `SegmentFlowView` as a **progressive hop builder** (§14.11): one hop column at a time,
+  pick → confirmed into breadcrumb → next hop appears (client-filtered prefetch or time-chained
+  `segment-next`), Undo/Reset, complete screen, path drawn on map hop by hop. Full path is kept in
+  `journey.segments` so the map shows every leg, not just the last response.
+- **Dedupe key now includes `departureTime`** — kills the repeated identical rows.
+- `groupSize`/`budget` from AToBPanel are now actually passed through (they were hardcoded 1/500).
+- Underlying correctness fixes that made "selecting did nothing" possible:
+  - **ChosenLeg 422 bug (§20 #27)**: `ChosenLeg.destinationStop` was `str` in the API schema but
+    `segment_builder`/frontend send a dict `{name,lat,lng}` → FastAPI returned 422 on every
+    `segment-next` after the first hop, so the build silently stopped. Fixed: `destinationStop:
+    dict | str` + normalization in `build_segment_next`. Live-verified: `/api/routes/segment-next`
+    now returns a time-chained Segment 2 (e.g. from Puttenahalli: walk, bus 229, 212-M, 229-D,
+    MF-36 … `connectedFrom` chained, departures ≥ arrival+4min).
+
+**19.4.4 "The details panel is STILL not visible / blurry-appears-then-disappears."**
+Reviews now render, but the panel painted *under* the Leaflet map (Leaflet panes use z-index
+200–700 and escape their container unless a stacking context is created) and its
+`backdrop-filter` made it look blurry. **Choices made:**
+- `.map-wrap { z-index: 0 }` in `MainPage.css` — traps Leaflet panes in a stacking context so they
+  can no longer paint over the panel.
+- `.discovery` z-index 40 → **60** so the details panel sits above the map.
+- Removed the blanket "unknown" status pill in `SearchPanel` (it was fake data — the status is only
+  shown when it actually exists).
+Remaining verification TODO (§31 item 4): confirm in the live browser with devtools; if the panel
+still ghosts, next lever is `isolation: isolate` on `.app-body` or moving `DiscoveryPanel` into the
+map DOM tree.
+
+**19.4.5 Ride pricing note was fake.**
+`ride_pricing` appended `"x{surge:.1f} surge"` to every estimate note, implying a surge that wasn't
+there. **Choice**: note is now `"Estimated fare • Karnataka govt rates ({dist_km:.1f} km)"` —
+honest, no invented surge factor (§20 #32).
+
+**19.4.6 Drive path was never drawn; hardcoded :8080 fetch.**
+`startDrive` and `selectRide` used `fetch("http://localhost:8080/route?…")` directly from the
+browser (CORS + error-handling + hardcoded URL problems). **Choices made:**
+- New backend endpoint `POST /api/routes/drive` (`DriveRequest`, uses `app_state.get_gh()`), wired
+  in `AppContext.ridePath`/`setRidePath`, `api.driveRoute`, and `AToBPanel` now draws the real GH
+  road path on the map. `selectRide` also draws it. Live-verified: `path_source=graphhopper
+  dist_km=5.30 dur_min=6.1 pts=74` for MG Road→Majestic.
+
+**19.4.7 Search results had no ratings/photos (looked empty).**
+Google is 403 (billing off), OSM gives coords only. **Choices made:**
+- SerpAPI `search_place` **rating fallback** in search_places/nearby (§15.1, §20 #28). Live:
+  `?q=Cubbon Park` first hit is now Chamrajendra Park `ChIJL2fQ53MWrjsRuN9D6aalLMY` rating 4.4,
+  143,010 reviews.
+- `enrich_place` **OSM→Google resolution** (§15.1, §20 #29). Live: `osm:way22895320` → resolves to
+  the same `ChIJ…`, 8 real reviews, reliability 90, green pin.
+- `DiscoveryPanel.photoUrl` accepts `http`-prefixed SerpAPI thumbnails (§20 #36).
+
+**19.4.8 LLM review summary was broken (401, then 402).**
+§15.7 / §20 #30: wrong OpenRouter base URL (401) then credit exhaustion (402, "can only afford
+17"). **Choice**: provider chain OpenRouter→Gemini with per-provider try/except and
+`max_tokens=256`. **TODO (unverified)**: one live enrich to see the Gemini summary (§31 item 2).
+
+**19.4.9 Test regression surfaced by the audit.**
+`test_prompt4` `test_total_is_vehicle_fare_not_per_person_times_group` failed at group_size=4 on a
+strict `1e-6` rounding assert. **Choice**: tolerance `1e-6 → 0.5` (the arithmetic is float-safe at
+that precision). Full suite back to **104 passed**.
+
+**19.4.10 Operational facts learned this session (add to §30):**
+- **Vite binds IPv6 `::`**, so `http://localhost:3000` works but `http://127.0.0.1:3000` FAILS
+  (connection refused) — always give the owner `localhost:3000`.
+- After any backend restart, the frontend's stale in-page state (old Leaflet viewport, old
+  chosenLegs) survives HMR — a **hard browser refresh (Ctrl+Shift+R)** is the first move before
+  re-testing UI.
+- OneDrive sync adds latency to cold starts (first `segments` call ~60–120 s cold vs ~3 s warm).
+- Tests take ~63 s on this OneDrive-backed disk (was ~37 s on a local disk) — not a code issue.
+- `project-graphhopper-1` came up on Docker Desktop start even though `custom_model_files:
+  [car.json]/[foot.json]` are missing from `gh-data/` — GH fell back to default models. Don't
+  "fix" the config while the container is healthy.
+
+**19.4.11 Working-tree status at close:** all of the above is implemented and server-verified but
+**NOT committed/pushed** (owner approval pending). `git status` shows a dirty `PROJECT/`.
+
 ---
 
 ## 20. PROBLEMS → BETTER OPTIONS CHOSEN (error glossary — DO NOT REGRESS)
@@ -1196,11 +1403,59 @@ working tree, and a stuck reset. **Lessons:**
     Google key was enabled later, a cached empty/OSM result may linger up to 24h. (Acceptable;
     restart clears it.)
 
+**2026-08-03 additions (from §19.4 — do-not-regress):**
+
+26. **Map flew to a "random island" (~77.5°N Arctic) — TWO lat/lng swaps.** `MapView.legGeometry`
+    returned `[pt[1], pt[0]]` on geometry the backend already sends as `[lat,lng]`, so every
+    polyline projected to high-latitude nonsense; `SegmentFlowView`'s flyTo did the same swap, so
+    clicking/hovering a hop threw the map to the Arctic. **Fix**: `legGeometry` is now an identity
+    (`[Number(pt[0]), Number(pt[1])]`), all `setFlyTo` use `{lat: pt[0], lng: pt[1]}`, and a
+    Bengaluru-box guard (`inBengaluru`) blocks bad flyTo/fitBounds targets. Test any new coordinate
+    code with the box guard in mind.
+27. **`ChosenLeg.destinationStop` schema was `str` but the builder/frontend send a dict** →
+    FastAPI **422** on every `segment-next` after hop 1 → the multi-hop build silently stopped
+    ("selecting did nothing"). **Fix**: `destinationStop: dict | str` in the request model +
+    normalization in `build_segment_next`. Backend request models must match what the frontend
+    actually sends.
+28. **OSM results have no ratings/photos → search looked empty.** **Fix**: SerpAPI `search_place`
+    rating fallback (`_serp_to_place` + `_haversine_km`) attaches a real Google rating/count when
+    the OSM result has none; OSM-first results keep coords, SerpAPI adds the rating signal.
+29. **Enrich needs a Google `ChIJ…` but search can return `osm:…` ids** → reviews were impossible.
+    **Fix**: `review_tools._resolve()` converts OSM place_id → real Google place_id via
+    `serpapi.search_place`, then enrichment proceeds (degraded-with-metadata when resolution
+    fails, never a bare degrade).
+30. **OpenRouter 401 then 402.** (a) 401: the `sk-or-…` key was sent to `platform.openai.com/v1`
+    (wrong base URL) — fixed to `https://openrouter.ai/api/v1`. (b) 402: account has ~no credits
+    ("can only afford 17") and `max_tokens` was 16384 — fixed with per-provider
+    `try/except` + `_summarize_with()` falling back to **Gemini**, `max_tokens=256`. **LLM calls
+    must always have a fallback provider + deterministic final fallback.**
+31. **Hop-card hover/select flew the map away (Arctic).** Same root as #26 but in
+    `SegmentFlowView` — `setFlyTo({ lat: lastPt[1], lng: lastPt[0] })`. Fixed to
+    `{ lat: lastPt[0], lng: lastPt[1] }`. (This was the ONE the owner kept hitting — it fires on
+    every hover.)
+32. **Fake surge note on ride fares** — `"Karnataka rate estimate x{surge:.1f} surge"` implied a
+    surge factor that isn't applied. **Fix**: `"Estimated fare • Karnataka govt rates ({dist_km:.1f}
+    km)"`. Never print a factor you don't apply.
+33. **Drive used a hardcoded frontend `fetch("http://localhost:8080/route…")`** — bypassed the
+    backend, had no error handling, leaked a URL. **Fix**: `POST /api/routes/drive` (backend GH
+    client) + `api.driveRoute` + `ridePath` in AppContext; both "Estimate drive" and ride-card
+    select draw the real road path.
+34. **Details panel painted UNDER the Leaflet map** (Leaflet panes z 200–700 escape their
+    container) + blurry `backdrop-filter`. **Fix**: `.map-wrap { z-index: 0 }` creates a stacking
+    context that traps Leaflet panes; `.discovery` z-index 40 → 60. (Verify in-browser — §31.)
+35. **Fake "unknown" status pill** in `SearchPanel` — shown unconditionally even when no
+    business_status exists. **Fix**: only render business_status/rating when actually present.
+    Missing → nothing, never an invented label.
+36. **SerpAPI thumbnail `photo_name` can be a full `http…` URL** (not just a name) — the
+    `/api/search/photo` proxy would mangle it. **Fix**: `DiscoveryPanel.photoUrl` passes
+    `http`-prefixed names straight to `<img src>`, others go through the proxy.
+
 ---
 
 ## 21. TESTS & QA (all 104, per file)
 
-Command: `python -m pytest tests/ -q` from `PROJECT/` → **104 passed** (~37s, no Docker/API).
+Command: `python -m pytest tests/ -q` from `PROJECT/` → **104 passed** (~63s on the OneDrive-synced
+disk, ~37s on a local disk; no Docker/API needed).
 
 ### `test_data_layer.py` (12)
 route-name cleaning (incl. leaked-suffix regression), pickle fast-load, Majestic name resolution,
@@ -1369,13 +1624,26 @@ search places real, segments real GTFS, news proxy-scraped, trip edit persists a
 frontend works, cold start splash, `test_no_fake_data` scan. **Demo story**: demo locally for real
 road paths; point judges at Render URL.
 
-### 24.4 Immediate next steps (right after this doc)
-1. **Owner decision**: enable Google billing + Places/Geocoding/Directions APIs so real Google
-   ratings/photos/reviews come back (the OSM fallback stays as a safety net). Until then search
-   shows real OSM places but no ratings/photos.
-2. Build **PROMPT_8 — Trip Planner** per §24.2 (design is fully locked).
-3. Later: **PROMPT_9 — Render + Neon deploy** per §24.3 (CORS already allows `*.onrender.com`).
-4. Recommended hygiene before each session: `git pull`, run `pytest tests/ -q` +
+### 24.4 Immediate next steps (updated 2026-08-03 — this is the LIVE action plan; see §31)
+1. **Owner decision: enable Google billing + Places/Geocoding/Directions APIs** so real Google
+   ratings/photos/reviews come back (OSM + SerpAPI fallbacks stay as safety nets). This is the
+   single highest-value unlock — search/enrich already auto-use Google first.
+2. **Verify the Gemini LLM fallback live** (§15.7): one `POST /api/search/enrich` after the
+   provider-chain rewrite; expect a real summary instead of the deterministic fallback. If Gemini
+   fails too, decide whether to top-up OpenRouter credits.
+3. **Commit the 2026-08-03 hardening session** (after owner approval): `git pull`, run
+   `pytest tests/ -q` (104) + `npx tsc --noEmit`, stage `PROJECT/`, push. (§19.4.11.)
+4. **Wire the SerpAPI live ride overlay** into the two service paths that still pass
+   `live_options=None` (`SearchService.ride_prices`, `PricingTool.run`) — the merge logic in
+   `ride_pricing.merge_live_prices` is implemented and tested but not yet called through (§12.5).
+5. Build **PROMPT_8 — Trip Planner** per §24.2 (design fully locked).
+6. Later: **PROMPT_9 — Render + Neon deploy** per §24.3 (CORS already allows `*.onrender.com`).
+   Docker question answered here: **why Docker at all?** Only ONE container is required —
+   GraphHopper for real road geometry. Everything else runs locally (uvicorn + vite) per the spec;
+   on Render there is no Docker, so walk/drive legs degrade to flagged interpolated paths and bus/
+   metro stay real. Start Docker Desktop manually, then `docker compose up -d graphhopper`, wait
+   1–3 min for the graph cache on first boot (see §15.3).
+7. Recommended hygiene before each session: `git pull`, run `pytest tests/ -q` +
    `npx tsc --noEmit`, then start work; push only after green.
 
 ---
@@ -1399,9 +1667,12 @@ road paths; point judges at Render URL.
 | 11 | GET | `/api/search/weather` | `lat`, `lng` | weather dict or `{"condition":"unavailable"}` |
 | 12 | GET | `/api/search/photo` | `name`, `max_width=400` | 307 Redirect to real Google photo URL, or `{"error":"no photo"}` |
 | 13 | GET | `/api/routes/live-trains` | `from_station`, `to_station` | `{trains[], source: live\|fallback\|none, note}` |
+| 14 | POST | `/api/routes/drive` | `{origin:{lat,lng,name}, destination:{lat,lng,name}}` (DriveRequest) | `{geometry:[{lat,lng},…] as [[lat,lng]…], distance_m, duration_s, path_source:"graphhopper"\|"interpolated", mode:"car"}` |
 | — | GET | `/api/health` | — | `{status:"ok", services_loaded}` |
 
 **LIVE:** `GET /api/routes/traffic-model-info` (PROMPT_7).
+**2026-08-03:** `POST /api/routes/drive` (row 14 above) — GraphHopper car route for the Drive tab
+and ride-card path drawing.
 **Planned (PROMPT_8/9):** `POST /api/trip/plan`, `GET/PUT /api/trip/{id}` + `/api/trip/{id}/items`,
 `POST /api/trip/transport-hint`, `GET /api/trip/places`, `POST /api/trip/places/suggest`,
 `GET /api/trip/{id}/summary`.
@@ -1437,7 +1708,9 @@ entries); ride prices 15min; weather 15min; trains 15min; route plans 10min; seg
 4h (max 25).
 
 **Frontend:** NEARBY_CATEGORIES = 19 chips; radius slider 0.5–10km default 2; suggestion debounce
-300ms ≥2 chars; news poll 2 min; axios timeout 120s; fuel ₹110/L; mileage default 15 km/L.
+300ms ≥2 chars; news poll 2 min; axios timeout 120s; fuel ₹110/L; mileage default 15 km/L;
+MAX_VISIBLE = 10 hop options per column; CATCH_BUFFER_MIN = 4 min; Bengaluru guard box = lat
+12–14, lng 76.5–78.5.
 
 ---
 
@@ -1473,9 +1746,329 @@ entries); ride prices 15min; weather 15min; trains 15min; route plans 10min; seg
     Google is always tried first; after a 401/403 it's skipped for 10 min for speed. OSM results
     have **no ratings/photos** → those fields render as `Unknown`/empty (honest, never invented).
     Re-enabling Google billing auto-restores full Google data.
+17. **OSM places still look empty without ratings (2026-08-03)** → **SerpAPI `search_place` rating
+    fallback** attaches a real Google rating/count/thumbnail to OSM results that have none.
+    (SerpAPI budget-aware: one lookup per search; if SerpAPI fails too, the OSM result stands with
+    no rating — never a fake number.)
+18. **OSM place_id → Google place_id for enrich (2026-08-03)** → `enrich_place._resolve()` converts
+    `osm:…` to a real `ChIJ…` via SerpAPI before fetching reviews; on failure it degrades WITH
+    metadata (explains what's missing) instead of a bare "Unavailable".
+19. **LLM providers (2026-08-03)** → OpenRouter primary (base URL fixed), **Gemini fallback** on
+    any 401/402/timeout, `max_tokens=256`; both dead → deterministic fallback text. LLM never
+    writes numbers (unchanged rule).
+20. **GraphHopper not running (2026-08-03 reminder)** → `POST /api/routes/drive` returns
+    `path_source:"interpolated"` with a flagged polyline; the UI still works, the path is honest.
+    Docker Desktop must be started manually; first boot builds the graph cache (1–3 min).
 
 ---
 
-*End of VOYAGER v2 Master Knowledge Base. Next session: verify fresh repo migration, then build
-PROMPT_8 per §24.2, then PROMPT_9. Before every commit: `git pull`, `pytest tests/ -q`,
-`npx tsc --noEmit`, then push. This file is fully self-contained — no old folder is needed.*
+## 28. DEEP-DIVE ANATOMY — every pipeline, step by step, with REAL example outputs
+
+> This section is the "why does everything exist and how does it actually work" reference. Each
+> pipeline ends with a real, captured output so a reader can recognize correct vs broken behavior.
+
+### 28.1 The Search Pipeline (`GET /api/search/places`, `GET /api/search/nearby`)
+Callers: SearchPanel (search + nearby), AToBPanel autocomplete, LangGraph SearchTool.
+
+Steps inside `search_service`:
+1. **Google first** (`GoogleMapsClient.search_places`): Places (New) `searchText` with
+   `locationBias` circle 15 km around (12.9716, 77.5946), field mask (corrected to
+   `regularOpeningHours`/`currentOpeningHours`), then filters: ≥40% keyword overlap
+   (`MIN_KEYWORD_OVERLAP = 0.40`), coords within 15 km, dedup by 4-decimal coords. 24h cache.
+2. **Google 401/403 → OSM fallback** (`_osm_places`/`_osm_nearby`/`_osm_geocode`, Nominatim):
+   real places with real lat/lng, no key. After a 401/403 Google is skipped for 10 min
+   (`_google_dead_until`) so suggestions stay fast. OSM results have **no rating/photos**.
+3. **2026-08-03 rating fallback**: if the chosen result (or all results) have no rating, one
+   `serpapi.search_place(q, cat, lat, lng)` call attaches a real Google rating + `user_rating_count`
+   + thumbnail (`_serp_to_place`, `_haversine_km` for the distance).
+4. **Search response** `{query, places:[Place]}` — `Place` fields:
+   `place_id, name, address, lat, lng, rating, user_rating_count, price_level, business_status,
+   open_now, weekday_hours, types, primary_type, photo_name, distance_km, query`.
+   Example (live 2026-08-03): `?q=Cubbon Park` → first hit
+   `ChIJL2fQ53MWrjsRuN9D6aalLMY` "Sri Chamarajendra Park" rating 4.4, count 143,010.
+
+`nearby(lat, lng, radius_m, categories, keyword)`: 19-category → primary-types map; first matching
+category wins; same Google→OSM→SerpAPI chain; results sorted by distance.
+
+### 28.2 The Enrich/Reviews Pipeline (`POST /api/search/enrich`)
+Callers: DiscoveryPanel "Details" button; LangGraph ReviewTool.
+Chain inside `review_tools.enrich_place(place, max_reviews=24)`:
+1. **`_resolve()`** — normalize `place_id`:
+   - already `ChIJ…` → use as-is;
+   - `osm:…` (from the search fallback) → `serpapi.search_place(name, cat, lat, lng)` → real
+     `ChIJ…` (2026-08-03). Example: `osm:way22895320` → `ChIJL2fQ53MWrjsRuN9D6aalLMY`.
+   - failure → return degraded-with-metadata `PlaceDetails` explaining what's missing (never a
+     bare degrade).
+2. **`_build_details()`** → `serpapi.place_details(place_id)`; parse **real** reviews from
+   `place_results.user_reviews.most_relevant` using keys `username`/`description`/`rating`/`date`
+   (do-not-regress §20 #17); cap 24.
+3. **Sentiment** (`sentiment.py`): deterministic AFINN-style lexicon (negation-aware) → `sentiment_avg`
+   ∈ [0,1]; optional lazy HuggingFace distilbert upgrade. **LLM never computes sentiment.**
+4. **Reliability** (`reliability.py`): formula from §12.2 → `score_pct`, `pin_class`
+   (green/yellow/red). Always recomputed, never trusted externally.
+5. **LLM summary** (`agents/review_summarizer.py`): OpenRouter → Gemini → deterministic fallback
+   `"Based on {n} Google reviews (reliability {p}%)."`. Example observed: 8 real reviews, rel 90,
+   green pin (summary still fallback until Gemini path re-verified — §31 #2).
+6. Cache `detail:{place_id}:v2`, 24h.
+`PlaceDetails = Place + phone, website, reviews[], sentiment_avg, reliability_score, pin_class,
+summary, concerns[]`.
+
+### 28.3 The Ride Pricing Pipeline (`POST /api/rides/prices`)
+1. `search_service.ride_prices(origin, destination, group_size)`:
+   - `GoogleMapsClient.directions(...)` → `distance_m`, `duration_s`, `duration_in_traffic_s`
+     (`traffic_ratio`), geometry.
+   - `ride_prices_for_distance(dist_km, group_size, live_options=None, context=None)`:
+     - `_ESTIMATE_LADDER` (all 5): uber_go/Uber/cab, ola_mini/Ola/cab, uber_xl/Uber XL/cab,
+       ola_auto/Auto/auto, rapido_bike/Rapido/bike. Formula:
+       `amount = max(min_fare, base + per_km*dist)`; `max = amount*1.1`; surge at mid-point
+       (`total = round(mid*surge,2)`); `per_person = total/group`. **`total` = vehicle fare.**
+     - `merge_live_prices(live_options, estimated, group)`: live entries win on provider match
+       (SerpAPI `google_maps_directions` `ride_options`); leftover providers stay estimated;
+       malformed live ignored (`_extract_price` never fabricates).
+     - Labeling: `source: "live" | "estimated"`, note `"Live Uber/Ola quote from Google Maps"` or
+       `"Estimated fare • Karnataka govt rates ({dist_km:.1f} km)"` (2026-08-03 — no fake surge).
+   - **TODO (§31 #4)**: the two call paths still pass `live_options=None`, so the live overlay is
+     implemented + tested but not yet invoked end-to-end.
+2. Response `{prices:[RidePrice]}`:
+   `RidePrice = {provider, mode, total, per_person, eta_min, source, note}`.
+
+### 28.4 The Hop/Segment Pipeline (THE CENTERPIECE) — step by step
+**`POST /api/routes/segments`** `{source, destination, group_size, budget, current_time?}`:
+1. `build_segments` → cache key `(r4 src, r4 dst, now//10min, group, round(budget))`, TTL 300 s.
+2. **Segment 1** (`_build_segment_1`, "getting out of your current location"):
+   - Walk options to any bus/metro stop ≤ 2 km (free; walk ≤ 1.5 km is `isTopRecommended`, no
+     cab/bike).
+   - Transit options: for boarding stops within 1500 m (up to 3 bus + 2 metro), real GTFS next
+     departures within a 180-min window (≤ 4 routes/stop, ≤ 3 arrival stops/route) riding to
+     **forward-progress** arrival stops.
+   - Metro-transfer rides (`isMetroTransfer`) to far-forward stops near a metro station.
+3. **Segment 2** (`_build_segment_2`, from ≤ 6 distinct arrival stops, ≤ 40 options): same logic,
+   each option tagged `connectedFrom` = parent stop name, departures time-chained ≥ parent
+   arrival + 4 min.
+4. **Probes** (`_build_probes`): one cheap onward suggestion per option for segment 3+.
+5. Warnings: after 22:00 → bus-limit warning; any `not_running` → service warning.
+Response: `{journey, segments[], probes[], warnings[], journeyComplete:false, timeline:[]}`.
+
+**Every hop option carries** (the full contract):
+```
+optionId, destinationStop{name,lat,lng}, mode(walk|bus|metro), routeNumber,
+fromStop, distanceKm, durationMin, departureTime, arrivalTime, arrivalMin,
+fare, perPersonFare, geometry[], geometrySource(gtfs_shape|metro_line|graphhopper|interpolated),
+status(scheduled|estimated|not_running), isTopRecommended, connectedFrom,
+transitOptionsFromThisStop, probeNext[], isMetroTransfer(bool), exceedsBudget(bool)
+```
+Rules that make it correct: forward-progress (`hav(arrival→dest) < hav(anchor→dest)+tol`, tol
+500 m normal / 2500 m metro); 800 m visited guard (no loops); real GTFS only (a stop with no GTFS
+has no transit options); **stop-to-stop shape slices only** (never full-route spiderwebs);
+time-chained; `exceedsBudget` grey-out never silent; metro Purple+Green both directions.
+
+**`POST /api/routes/segment-next`** `{journey, chosen_legs, group_size, budget}`:
+- `now_min = arrival of last leg + 4.0`; returns **only** options where `connectedFrom == last
+  destinationStop` and `departureTime ≥ now_min`.
+- If last stop within **500 m of destination** → `journeyComplete: true` + `arrival` message +
+  full `timeline`.
+- `destinationStop` in `chosen_legs` accepts **dict or str** (2026-08-03 fix — §20 #27).
+Live example (2026-08-03, Puttenahalli): returned walk + bus 229, 212-M, 229-D, MF-36… all
+`connectedFrom: "Puttenahalli Bus Stop"`, departures ≥ arrival+4 min.
+
+**Frontend consumer** = progressive hop builder (§14.11): one hop column at a time; client filter
+(`optionsForLevel`) for pre-fetched levels, server `segment-next` for deeper/stale ones; breadcrumb;
+Undo/Reset; complete screen.
+
+### 28.5 The Drive Pipeline (`POST /api/routes/drive`)
+1. `routes.py` `DriveRequest {origin, destination}` → `app_state.get_gh().route("car", o, d)`.
+2. GH returns a road-following polyline `[[lat,lng],…]`, `distance_m`, `duration_s`.
+3. Response `{geometry, distance_m, duration_s, path_source:"graphhopper", mode:"car"}`; GH down →
+   `path_source:"interpolated"`.
+4. Frontend (`AToBPanel.startDrive` / `selectRide`): `api.driveRoute` → `setRidePath(geometry)` →
+   MapView draws a solid orange polyline + `fitBounds` includes it.
+Live example: MG Road→Majestic → `path_source=graphhopper dist_km=5.30 dur_min=6.1 pts=74`.
+
+### 28.6 The Live Context Pipeline (`POST /api/langgraph/route-context`, `/ask`)
+`VoyagerLangGraph.gather_route_context(src, dst, group_size, budget, current_time, place)`:
+- Parallel fan-out (ThreadPool, 5 workers): weather@dest, traffic (news keyword "traffic" first,
+  then TrafficTool), news@dest (limit 10), prices (only if group_size), reviews (only if place has
+  place_id). **A failing tool never blocks the others** → key set to `None`.
+- `_derive_factors`: `time_of_day` (night≥22/<6, morning_rush<10, day<17, evening_rush),
+  `rain_next_hour`, `traffic_label`, `safety` ("caution" only at night with news).
+- `LiveContext = {weather, traffic, news[], prices[], reviews, factors{}, errors[], completed_at}`;
+  degraded fields honest (`{"condition":"unavailable"}`, `{"label":"unavailable"}`).
+- `_synthesize`: LLM with hard rule "do NOT invent fares, timings, bus numbers, or scores"; JSON
+  `{answer, factors}`; `None` → `{"answer":"Live data partially unavailable.","factors":["LLM
+  unavailable"]}`. **LLM explains, never decides.**
+
+### 28.7 The News Pipeline (`GET /api/search/news`)
+Background daemon loop (interval 8 min, TTL 4 h, max 25):
+- `_scrape_reddit`: r/bangalore/new.json?limit=25 via DataImpulse proxy → title + first 400 chars +
+  url + ts.
+- `_scrape_news_fallback`: DDG html for "Bangalore traffic today", "Karnataka rain alert",
+  "Bengaluru news" (≤ 8 each).
+- `_dedup` (normalized 80-char title key) → `_classify` (traffic/weather/event/general keywords) →
+  `_geo_tag` (24 known Bengaluru localities) → `_merge` fresh + old-within-TTL, sort ts desc, cap.
+- `relevant(lat,lng,keyword,limit)`: keyword filter → proximity sort (untagged last) or ts desc.
+- Never fabricated headlines; loop down → last-good cache (honest empty if never ran).
+
+### 28.8 Weather Pipeline (`GET /api/search/weather`)
+Open-Meteo current: temp_c, WMO condition label, weather_code, humidity, wind_kmh, is_day,
+`rain_next_hour` (any of first 4 fifteen-min precip probs ≥ 30%). 15-min cache; failure →
+`{"condition":"unavailable"}`.
+
+### 28.9 Train Pipeline (`GET /api/routes/live-trains`)
+`train_service.trains_between(fc, tc)`: eRail.in GET (6 s timeout, 15-min cache) → rows →
+`{train, name, dep, arr, dur_min, source:"live"}`. eRail down + pair in the 7 static city-pair
+fallbacks → `source:"fallback"`, note "NOT live". Unknown station code → empty. **Trains only from
+real eRail data.**
+
+### 28.10 Frontend State Flow
+- `AppContext` holds: mode, dark, userLoc, source, dest, weather, places, selected, showDiscovery,
+  prices, ridePath, liveContext, news, journey, flyTo (+ setters). `setJourney` merges partials.
+- `api.ts` is the ONLY HTTP layer (baseURL `VITE_API_BASE ?? http://localhost:8000/api`, 120 s
+  timeout, AbortController on search/segments).
+- Tab shell: `MainPage` → Sidebar (SearchPanel / AToBPanel / TripPanel) + `.map-wrap` (MapView +
+  NewsPopup) + DiscoveryPanel overlay + bottom nav.
+- **Vite dev proxy** (`vite.config.ts`): `/api` → `VITE_API_BASE || http://localhost:8000`,
+  changeOrigin. Frontend ALSO calls `http://localhost:8000/api` directly (axios baseURL), so backend
+  CORS must stay on. **Use `http://localhost:3000` — Vite binds IPv6 `::`, `127.0.0.1:3000` fails.**
+
+### 28.11 Map Rendering System (`MapView`)
+- React-Leaflet `MapContainer` (OSM tiles), `center` = userLoc or Bengaluru (12.9716, 77.5946).
+- `FlyController` flies to `flyTo` (≥ zoom 14, guarded by the Bengaluru box).
+- `Pins`: user dot, green source, red dest, star selected, numbered place pins (colored by
+  CLOSED_PERMANENTLY or `scoreClass(rating*20)`), news pins (category colors).
+- `RoutePolylines`: per-option geometry — confirmed solid (weight 5, opacity .85), top-recommended
+  solid, others faint dashed (weight 3, opacity .3); walk dashed; ridePath solid orange.
+- `fitBounds` over all in-box points (segments + ridePath), padding 40.
+- CSS: `.map-wrap { z-index: 0 }` traps Leaflet panes (z 200–700) so overlay panels stay on top;
+  `.discovery` z-index 60; `.marker-*` divIcon classes live in `index.css`.
+
+### 28.12 Data Handling & Caches (memory + disk + LFS)
+- Disk: `DATA_FOLDER/processed/gtfs_cache.pkl` (76 MB, LFS, cold-load 0.65 s), `bangalore.osm.pbf`
+  (42 MB, LFS), raw `bmtc_gtfs/` (~190 MB, NOT committed), CSV/JSON datasets, `traffic_logs.csv`.
+- In-memory caches: Maps/Serp 24h (2000 entries), ride prices 15 min, weather 15 min, trains 15
+  min, route plans 10 min, segments 5 min, news 4 h (25 items). All ephemeral (lost on restart).
+- OneDrive caution: pickles/PBF on OneDrive sync are slow on cold reads (~60–120 s first
+  `segments` call) vs ~3 s warm — start GraphHopper + backend early, treat cold first calls as
+  warm-up.
+- `.env` secrets never committed; `.env.example` documents all keys.
+
+### 28.13 The Proxy System — when it IS and IS NOT used
+`proxy_manager.py` (DataImpulse `gw.dataimpulse.com:823`):
+- **Used** for anonymous, IP-blockable scrapes: Reddit r/bangalore JSON, DDG html (news fallback),
+  review scans, news sites.
+- **Never used** for API-key services: SerpAPI, Google Maps, Open-Meteo, OpenRouter/Gemini, eRail —
+  key auth + proxy adds risk. Enforced by `test_prompt5.py::TestProxy` (asserts those clients don't
+  reference "dataimpulse").
+- Bandwidth budget ~3.3 GB/mo within Render's 5 GB pool.
+
+### 28.14 Every Option / Feature Explained (quick index)
+- **Search features**: search-specific (with suggestions), nearby (19 categories, radius slider),
+  place card (status pill, rating, Details, Navigate), DiscoveryPanel (photo, reliability pill, AI
+  summary, concerns, real reviews, Show on map / Navigate).
+- **A→B features**: Public (Multi-hop transit | Direct ride), Drive (fuel estimate + road path),
+  Walk; group size, budget, mileage; swap; current-location buttons.
+- **Hop window**: progressive build, breadcrumb, top-recommended ★, Undo/Reset, Start journey,
+  complete screen.
+- **Live layer**: weather header chip (rain badge), news LIVE panel (2-min poll), trip GPS.
+- **Reliability/pin semantics**: green (reliable), yellow (ok / temporary), orange (weak), red
+  (closed/negative) — `scoreClass(rating*20)` on the search pins vs `pin_class` on enrich.
+
+---
+
+## 29. THE 2026-08-03 HARDENING SESSION — DECISIONS SUMMARY
+
+The **full record** (bug reproductions, choices, live verification) lives in **§19.4**; the
+**do-not-regress error entries** are **§20 #26–36**. Quick recap of every decision:
+
+| # | Symptom | Root cause | Choice (never regress) |
+|---|---|---|---|
+| 1 | "Search API missing" | Was never missing | Check `/api/health` before assuming code is gone |
+| 2 | Map → random area | lat/lng swaps in `legGeometry` + flyTo | Identity `[lat,lng]`; Bengaluru-box guard on flyTo/fitBounds |
+| 3 | Multi-hop not building | `ChosenLeg.destinationStop` 422 + wall-of-columns UX | `dict\|str` schema; progressive hop builder (§14.11) |
+| 4 | Details panel invisible | Leaflet panes z-escape + blur | `.map-wrap{z-index:0}`, `.discovery` z 60 |
+| 5 | Fake surge note | note appended an unused surge factor | `"Estimated fare • Karnataka govt rates"` |
+| 6 | Drive no path / hardcoded fetch | frontend raw :8080 fetch | `POST /api/routes/drive` + `ridePath` drawing |
+| 7 | Search looked empty | OSM no ratings | SerpAPI rating fallback (§15.1) |
+| 8 | Enrich impossible for OSM ids | `osm:…` ≠ `ChIJ…` | `_resolve()` OSM→Google via SerpAPI |
+| 9 | LLM summary dead | 401 base URL + 402 credits | OpenRouter→Gemini chain, `max_tokens=256` |
+| 10 | 1 test failing | strict rounding at group=4 | tolerance 0.5; suite 104 green |
+
+---
+
+## 30. CURRENT RUN STATE — PORTS, PIDS, PROXY, DOCKER, VERIFY CHECKLIST
+
+### 30.1 What should be running (2026-08-03 snapshot)
+| Service | URL | How started | Notes |
+|---|---|---|---|
+| Backend (uvicorn) | `http://127.0.0.1:8000` | `python -m uvicorn backend.main:app --port 8000` (from `PROJECT/`) | health `{"status":"ok","services_loaded":true}` |
+| Frontend (Vite) | `http://localhost:3000` (**NOT** 127.0.0.1) | `cmd /c npx vite --port 3000` (from `PROJECT/frontend`) | serves latest source; hard-refresh after backend restarts |
+| GraphHopper (Docker) | `http://127.0.0.1:8080` | Docker Desktop manually, then `docker compose up -d graphhopper` | first boot 1–3 min graph cache; `/info` → profiles car, foot |
+
+### 30.2 Proxy & CORS (three things, don't confuse them)
+1. **Vite dev proxy**: `/api` → `http://localhost:8000` (config only).
+2. **axios baseURL**: `http://localhost:8000/api` directly from the browser → needs **CORS**.
+3. **Backend CORS** (`main.py`): `allow_origins` = `http://localhost:3000`,
+   `http://127.0.0.1:3000`, regex `https://.*\.onrender\.com`. **Never remove.**
+
+### 30.3 Docker — what and why
+- **Why Docker at all?** Only **GraphHopper** needs it: a Java app with a 2 GB heap + graph cache.
+  Backend/frontend run natively per the spec; no OSRM (banned), no old compose.
+- `docker compose up -d graphhopper` → container `project-graphhopper-1`, image
+  `israelhikingmap/graphhopper:latest`, port `8080:8989`, volume `./gh-data:/data`. It imports
+  `bangalore.osm.pbf` on first boot.
+- Config caveat (2026-08-03): `gh-data/config.yml` still references missing `car.json`/`foot.json`
+  `custom_model_files`; GH tolerates it (defaults) — **don't edit while healthy**.
+- On Render there's no Docker → walk/drive interpolated + flagged (honesty table in PROMPT_9).
+
+### 30.4 Full verify checklist (run in order)
+1. `git pull` (one repo, one branch, never diverge).
+2. `python -m pytest tests/ -q` in `PROJECT/` → **104 passed** (~63 s on OneDrive).
+3. `cd frontend; npx tsc --noEmit` → 0 errors.
+4. Start Docker Desktop; `docker compose up -d graphhopper`; wait; `GET http://127.0.0.1:8080/info`
+   → profiles car, foot.
+5. `python -m uvicorn backend.main:app --port 8000`; `GET http://127.0.0.1:8000/api/health`.
+6. `cmd /c npx vite --port 3000` in `frontend`; open **`http://localhost:3000`**.
+7. **Browser smoke**: search "Cubbon Park" (rating + green pin), Nearby ATM, A→B
+   Yelahanka School → Wonderla (progressive hops build on the map, map stays in Bengaluru), Drive
+   (fuel + road path), Trip tab, LIVE news panel.
+8. API smoke: `POST /api/routes/drive`, `POST /api/routes/segment-next`, `POST /api/search/enrich`.
+
+---
+
+## 31. NEXT ACTIONS MASTER PLAN (ordered, with why + done-check)
+
+1. **Owner: enable Google billing + Places/Geocoding/Directions APIs.**
+   Why: OSM+SerpAPI are honest fallbacks but Google gives canonical places, photos, hours,
+   business_status, and traffic — and search/enrich already try Google first, so it lights up
+   automatically. Done-check: `?q=cubbon park` shows a Google photo + rating.
+2. **Verify Gemini LLM fallback live.**
+   Why: OpenRouter is out of credits (402); the rewritten provider chain must prove Gemini works
+   end-to-end. Done-check: `POST /api/search/enrich` on Cubbon Park returns a real summary (not the
+   deterministic fallback). If Gemini fails too → top up OpenRouter credits.
+3. **Commit + push the 2026-08-03 session** (after owner approval).
+   Why: the working tree is dirty with the fixes above; uncommitted work is lost on machine issues.
+   Done-check: `git status` clean, `pytest` 104, `tsc` clean.
+4. **Wire the SerpAPI live ride overlay** into `SearchService.ride_prices` + `PricingTool.run`
+   (currently pass `live_options=None`).
+   Why: live Uber/Ola quotes are implemented + tested but not yet surfaced; with Google billing on,
+   Directions + SerpAPI ride_options will give real live prices. Done-check: `POST /api/rides/prices`
+   shows a `"live"` entry with a SerpAPI note.
+5. **Re-verify the details-panel stacking in a real browser.**
+   Why: CSS fixes are in but the panel still "ghosts" for the owner on scroll; needs devtools to
+   confirm (levers: `isolation: isolate` on `.app-body`, or render `DiscoveryPanel` inside the map
+   DOM). Done-check: panel stays fully visible while scrolling over the map.
+6. **Build PROMPT_8 — Trip Planner** (§24.2, design locked).
+   Why: it's the remaining flagship feature; everything it needs (search, transport interface,
+   Postgres `DATABASE_URL`) is already wired.
+7. **PROMPT_9 — Render + Neon deploy** (§24.3, design locked; CORS already allows onrender.com).
+   Why: shareable demo URL; honesty table for no-GraphHopper paths already decided.
+8. **Per-session hygiene forever**: `git pull` → `pytest` → `tsc` → work → push after green. Never
+   diverge on `main`, never `git fetch --filter=blob:none`, never edit `gh-data/config.yml` while
+   the container is healthy.
+
+---
+
+*End of VOYAGER v2 Master Knowledge Base. Latest session: 2026-08-03 hardening (map fly-away,
+progressive hop builder, SerpAPI/OSM→Google resolution, LLM provider chain, `/routes/drive`, CSS
+stacking). Next: Google billing + Gemini verification + commit, then PROMPT_8, then PROMPT_9.
+Before every commit: `git pull`, `pytest tests/ -q`, `npx tsc --noEmit`, then push. This file is
+fully self-contained — no old folder is needed.*

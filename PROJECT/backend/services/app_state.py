@@ -92,6 +92,10 @@ def get_builder() -> SegmentBuilder:
     return _load_all()[3]
 
 
+def get_gh() -> GraphHopperClient:
+    return _load_all()[2]
+
+
 def get_search() -> SearchService:
     return _load_all()[4]
 

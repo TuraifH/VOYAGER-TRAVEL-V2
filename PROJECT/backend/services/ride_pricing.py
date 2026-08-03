@@ -47,7 +47,8 @@ def estimate_ride_prices(
             total=total,
             per_person=round(total / max(1, group_size), 2),
             source="estimated",
-            note=f"Karnataka rate estimate x{surge:.1f} surge",
+            note=f"Estimated fare • Karnataka govt rates ({dist_km:.1f} km)"
+            if dist_km > 0 else "Estimated fare • Karnataka govt rates",
         ))
     return out
 

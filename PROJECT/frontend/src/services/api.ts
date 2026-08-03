@@ -1,5 +1,6 @@
 import axios from "axios";
 import type {
+  DriveRoute,
   LatLng,
   LiveContext,
   NewsItem,
@@ -27,6 +28,7 @@ export interface Api {
   segmentNext: (journey: unknown, chosenLegs: unknown[], groupSize: number, budget: number) => Promise<SegmentResponse>;
   routeContext: (src: LatLng, dst: LatLng, groupSize: number, budget: number, place?: PlaceResult | null) => Promise<LiveContext>;
   liveTrains: (from: string, to: string) => Promise<{ trains: unknown[]; source: string; note?: string }>;
+  driveRoute: (origin: LatLng, dest: LatLng) => Promise<DriveRoute>;
 }
 
 export const api: Api = {
@@ -110,6 +112,14 @@ export const api: Api = {
   async liveTrains(from, to) {
     const { data } = await http.get<{ trains: unknown[]; source: string; note?: string }>("/routes/live-trains", {
       params: { from_station: from, to_station: to },
+    });
+    return data;
+  },
+
+  async driveRoute(origin, dest) {
+    const { data } = await http.post<DriveRoute>("/routes/drive", {
+      origin: { ...origin, name: origin.name ?? "" },
+      destination: { ...dest, name: dest.name ?? "" },
     });
     return data;
   },

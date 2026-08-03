@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import type { LatLng, LiveContext, NewsItem, PlaceDetails, PlaceResult, RidePrice, SegmentResponse, WeatherNow } from "../types";
+import type { Coord, LatLng, LiveContext, NewsItem, PlaceDetails, PlaceResult, RidePrice, SegmentResponse, WeatherNow } from "../types";
 
 export type Mode = "search" | "atob" | "trip";
 
@@ -38,6 +38,9 @@ interface AppState {
   prices: RidePrice[];
   setPrices: (p: RidePrice[]) => void;
 
+  ridePath: Coord[] | null;
+  setRidePath: (p: Coord[] | null) => void;
+
   liveContext: LiveContext | null;
   setLiveContext: (c: LiveContext | null) => void;
 
@@ -64,6 +67,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selected, setSelected] = useState<PlaceDetails | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [prices, setPrices] = useState<RidePrice[]>([]);
+  const [ridePath, setRidePath] = useState<Coord[] | null>(null);
   const [liveContext, setLiveContext] = useState<LiveContext | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [journey, setJourneyState] = useState<JourneyState>({
@@ -96,13 +100,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     weather, setWeather,
     places, setPlaces,
     selected, setSelected, showDiscovery, setShowDiscovery,
-    prices, setPrices,
+    prices, setPrices, ridePath, setRidePath,
     liveContext, setLiveContext,
     news, setNews,
     journey, setJourney,
     flyTo, setFlyTo,
   }), [mode, dark, userLoc, source, dest, weather, places, selected, showDiscovery,
-      prices, liveContext, news, journey, flyTo]);
+      prices, ridePath, liveContext, news, journey, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
