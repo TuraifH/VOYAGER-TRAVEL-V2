@@ -45,3 +45,4 @@ app.include_router(search_router, prefix="/api")
 def health():
     loaded = app_state.is_loaded()
     return {"status": "ok", "services_loaded": loaded}
+##
