@@ -2,9 +2,9 @@ import { useEffect } from "react";
 import { useApp, type Mode } from "../context/AppContext";
 import HeaderBar from "../components/HeaderBar";
 import MapView from "../components/MapView";
-import SearchPanel from "../components/SearchPanel";
-import AToBPanel from "../components/AToBPanel";
-import TripPanel from "../components/TripPanel";
+import SearchInput, { SearchResults } from "../components/SearchPanel";
+import AToBInput, { AtoBResults } from "../components/AToBPanel";
+import TripInput, { TripResults } from "../components/TripPanel";
 import DiscoveryPanel from "../components/DiscoveryPanel";
 import NewsPopup from "../components/NewsPopup";
 import SegmentFlowView from "../components/SegmentFlowView";
@@ -18,7 +18,13 @@ const TABS: { key: Mode; label: string; icon: string }[] = [
 ];
 
 export default function MainPage() {
-  const { mode, setMode, setUserLoc, flowOpen, setFlowOpen, flowParams } = useApp();
+  const { mode, setMode, clearTransient, setUserLoc, flowOpen, setFlowOpen, flowParams } = useApp();
+
+  const changeMode = (m: Mode) => {
+    if (m === mode) return;
+    clearTransient();
+    setMode(m);
+  };
 
   useEffect(() => {
     if (!navigator.geolocation) return;
@@ -33,10 +39,16 @@ export default function MainPage() {
     <div className="app-shell">
       <HeaderBar />
       <div className="app-body">
-        <aside className={`sidebar glass ${mode === "search" ? "visible" : ""}`}>
-          {mode === "search" && <SearchPanel />}
-          {mode === "atob" && <AToBPanel />}
-          {mode === "trip" && <TripPanel />}
+        <aside className="input-window glass-strong visible">
+          {mode === "search" && <SearchInput />}
+          {mode === "atob" && <AToBInput />}
+          {mode === "trip" && <TripInput />}
+        </aside>
+
+        <aside className="results-window glass-strong">
+          {mode === "search" && <SearchResults />}
+          {mode === "atob" && <AtoBResults />}
+          {mode === "trip" && <TripResults />}
         </aside>
 
         <main className="map-wrap">
@@ -66,7 +78,7 @@ export default function MainPage() {
           <button
             key={t.key}
             className={`tab ${mode === t.key ? "active" : ""}`}
-            onClick={() => setMode(t.key)}
+            onClick={() => changeMode(t.key)}
           >
             <span className="material-symbols-outlined">{t.icon}</span>
             <span className="tab-label">{t.label}</span>

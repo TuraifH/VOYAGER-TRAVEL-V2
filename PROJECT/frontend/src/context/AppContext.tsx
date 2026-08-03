@@ -3,6 +3,12 @@ import type { Coord, LatLng, LiveContext, NewsItem, PlaceDetails, PlaceResult, R
 
 export type Mode = "search" | "atob" | "trip";
 
+export interface NearbyBase {
+  lat: number;
+  lng: number;
+  radiusM: number;
+}
+
 export interface JourneyState {
   segments: SegmentResponse | null;
   chosenLegs: unknown[];
@@ -30,6 +36,10 @@ interface AppState {
 
   places: PlaceResult[];
   setPlaces: (p: PlaceResult[]) => void;
+  searchResults: PlaceResult[];
+  setSearchResults: (p: PlaceResult[]) => void;
+  pinned: PlaceResult | null;
+  setPinned: (p: PlaceResult | null) => void;
   selected: PlaceDetails | null;
   setSelected: (p: PlaceDetails | null) => void;
   showDiscovery: boolean;
@@ -37,6 +47,11 @@ interface AppState {
 
   prices: RidePrice[];
   setPrices: (p: RidePrice[]) => void;
+  fuel: number | null;
+  setFuel: (f: number | null) => void;
+  nearbyBase: NearbyBase | null;
+  setNearbyBase: (b: NearbyBase | null) => void;
+  clearTransient: () => void;
 
   ridePath: Coord[] | null;
   setRidePath: (p: Coord[] | null) => void;
@@ -69,9 +84,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [dest, setDest] = useState<LatLng | null>(null);
   const [weather, setWeather] = useState<WeatherNow | null>(null);
   const [places, setPlaces] = useState<PlaceResult[]>([]);
+  const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
+  const [pinned, setPinned] = useState<PlaceResult | null>(null);
   const [selected, setSelected] = useState<PlaceDetails | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [prices, setPrices] = useState<RidePrice[]>([]);
+  const [fuel, setFuel] = useState<number | null>(null);
+  const [nearbyBase, setNearbyBase] = useState<NearbyBase | null>(null);
   const [ridePath, setRidePath] = useState<Coord[] | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
   const [flowParams, setFlowParams] = useState({ groupSize: 1, budget: 500 });
@@ -100,21 +119,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setDest(source);
   };
 
+  const clearTransient = () => {
+    setPlaces([]);
+    setSearchResults([]);
+    setPinned(null);
+    setSelected(null);
+    setShowDiscovery(false);
+    setPrices([]);
+    setFuel(null);
+    setNearbyBase(null);
+    setRidePath(null);
+    setFlyTo(null);
+    setFlowOpen(false);
+    setJourney({ segments: null, chosenLegs: [], active: false, position: null });
+  };
+
   const value = useMemo<AppState>(() => ({
     mode, setMode, dark, toggleDark,
     userLoc, setUserLoc,
     source, dest, setSource, setDest, swap,
     weather, setWeather,
     places, setPlaces,
+    searchResults, setSearchResults, pinned, setPinned,
     selected, setSelected, showDiscovery, setShowDiscovery,
-    prices, setPrices, ridePath, setRidePath,
+    prices, setPrices, fuel, setFuel,
+    nearbyBase, setNearbyBase, clearTransient,
+    ridePath, setRidePath,
     flowOpen, setFlowOpen, flowParams, setFlowParams,
     liveContext, setLiveContext,
     news, setNews,
     journey, setJourney,
     flyTo, setFlyTo,
-  }), [mode, dark, userLoc, source, dest, weather, places, selected, showDiscovery,
-      prices, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
+  }), [mode, dark, userLoc, source, dest, weather, places, searchResults, pinned, selected, showDiscovery,
+      prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -1,0 +1,27 @@
+.hop-tree { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+
+.hop-tree-scroll { overflow-x: auto; overflow-y: hidden; position: relative; min-height: 320px; }
+
+.tree-svg { display: block; }
+
+.tree-node { cursor: default; }
+.tree-node.clickable { cursor: pointer; }
+.tree-node.clickable rect { transition: filter 0.15s; }
+.tree-node.clickable:hover rect { filter: brightness(1.06); }
+
+.node-label { font-size: 13px; font-weight: 700; fill: var(--text); }
+.node-sub { font-size: 11px; fill: var(--text-3); }
+.node-badge { font-size: 13px; font-weight: 800; fill: #fff; }
+
+.edge-label { font-size: 11px; font-weight: 700; }
+
+.tree-skel { height: 120px; margin-top: 8px; }
+
+.hop-detail { padding: 12px 14px; border-left: 3px solid var(--primary); }
+.hop-detail .icon-btn {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text); border-radius: 8px; padding: 2px; line-height: 1;
+}
+.hop-detail .icon-btn:hover { background: rgba(120, 130, 160, 0.15); }
+.hop-detail .stat { font-size: 13px; }
+.hop-detail .stat b { font-size: 15px; }

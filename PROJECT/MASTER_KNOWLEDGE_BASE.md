@@ -2655,11 +2655,81 @@ honesty map (§27).
 
 ---
 
-*End of VOYAGER v2 Master Knowledge Base. Latest session: **2026-08-04** — News + Photo fixes:
-the news engine is now actually started (`main.py` lifespan) with a no-proxy direct-fetch fallback
-(`NewsEngine._fetch`), and photos now render through a server-side byte proxy (`fetch_photo`,
-`/api/photo` + `/api/search/photo`, no key leak, honest 404). 104 tests + tsc clean. See §33 for
-the full record, §33.8 for do-not-regress #40–44, and §33.13 for the next actions (Google billing →
-Gemini verify → live rides → PROMPT_8 → PROMPT_9). Before every commit: `git pull`,
-`pytest tests/ -q`, `npx tsc --noEmit`, then push. This file is fully self-contained — no old
+## 34. IMPLEMENTATION_PLAN execution — News fix + window split + radius + hop decision tree
+
+> Executed 2026-08-04. Implements the 5 parts of `IMPLEMENTATION_PLAN.md`. Owner-confirmed
+> decisions §8. Gate: `pytest tests/ -q` = **104 passed**, `npx tsc --noEmit` = **0 errors**,
+> `npx vite build` = clean, live smoke Verified.
+
+### 34.1 Part 1 — News popup fix (frontend, CSS only)
+- `NewsPopup.css`: `.news-popup` moved from `left/bottom/z-index:30` → **`top:12px; z-index:1000`**
+  (≥ Leaflet panes 200–700; still trapped inside `.map-wrap` stacking context `z-index:0`). It now
+  renders **above** the map at the top, colliding with neither the map nor the bottom flow-sheet.
+
+### 34.2 Part 2 — Stop-selection destination preference (backend, + transfer-flag fix)
+- `segment_builder.py` `_spaced_arrival_stops`: now collects all forward-progress candidates that
+  pass `MIN_BUS_HOP_M` and skip the boarding stop, sorts by **nearest-to-destination first**, returns
+  the nearest-dest stop as the primary (one-go-to-destination) plus up to `MAX_ARRIVAL_STOPS_PER_ROUTE`
+  spaced picks (each ≥ `MIN_HOP_SPACING_M` from the chosen ones), so the user can still alight early.
+- `_metro_rides`: `_metro_forward_stations` per line sorted nearest-dest, capped to
+  `MAX_ARRIVAL_STOPS_PER_ROUTE`. Same ground rule for metro (§8 final decision — Rajanukunte-over-Avalahalli).
+- **Transfer-flag fix:** because the nearest-dest pick can coincide with the metro-transfer stop, the
+  long-haul transfer loop produced a **duplicate** that dedup dropped the `isMetroTransfer` flag off
+  (regression broke `test_long_haul_bus_to_metro_transfer`). Now the transfer loop **promotes** the
+  existing option to `isMetroTransfer=True` instead of appending a dup. 104 tests green.
+
+### 34.3 Part 3 — Split input window + results window + clear-on-change (frontend)
+- **AppContext** gained transient state + a single clear action:
+  `searchResults`/`setSearchResults`, `pinned`/`setPinned`, `nearbyBase`/`setNearbyBase`
+  (`{lat,lng,radiusM}`), `fuel`/`setFuel`, and **`clearTransient()`** which resets all of
+  places/searchResults/pinned/selected/showDiscovery/prices/fuel/nearbyBase/ridePath/flyTo AND the
+  A→B chosen path (`flowOpen=false`, `journey={segments:null,chosenLegs:[],active:false}`).
+- **MainPage.tsx**: single `.sidebar` replaced by two floating layers — `.input-window`
+  (top-left, compact) + `.results-window` (below it, scrollable), both `z-index:900` (above map,
+  below flow-sheet 1000). Bottom tabs call `clearTransient()` then `setMode`.
+- **SearchPanel** split → `SearchInput` (default: tabs + search box + nearby controls) + exported
+  `SearchResults` (renders context `searchResults`). Nearby writes `nearbyBase`.
+- **AToBPanel** split → `AtoBInput` (default) + `AtoBResults` (uses context `prices` + `fuel`).
+- **TripPanel** split → `TripInput` (default: start/end/create) + `TripResults`.
+- **Clear-on-change** (owner §8.4): typing a new query, changing tab, or switching the bottom feature
+  clears previous results/detail/radius/path.
+
+### 34.4 Part 4 — Nearby radius circle (frontend)
+- **MapView** renders `<Circle center={[lat,lng]} radius={radiusM}>` (fill `#6c5ce7` 8% opacity,
+  dashed stroke) whenever `nearbyBase` is set. `SearchInput.runNearby` sets it; slider drag updates
+  it live; leaving/clearing Nearby removes it (via `clearTransient`).
+
+### 34.5 Part 5 — Horizontal decision-tree hop window (new `HopTreeView`)
+- New `HopTreeView.tsx/.css`. `SegmentFlowView` now renders `<HopTreeView>` instead of the vertical
+  `hop-col`. Shared helpers (`optionsForLevel`, `dedupeOptions`, `havKm`, `legColor`, `MODE_META`,
+  `MAX_VISIBLE`, `CATCH_BUFFER_MIN`) moved to `HopTreeView.tsx` and re-used by `SegmentFlowView`.
+- **Layout (SVG, left→right):** root = source (left); each `Segment.options[]` = branches from the
+  confirmed stop; node = destination stop ("→ X.X km to dest"); final `${destination}` node on the
+  right when `journeyComplete`. Edge length scales with `option.distanceKm` relative to siblings at
+  the same node (`MIN_EDGE 84 → MAX_EDGE 190px`). Chosen path solid/bold; alternatives dashed + faint.
+- **Interaction:** clicking a stop **node** (or its detail "Take this hop") calls
+  `onSelect(depth, option)` → `selectHop` sets `confirmed=prefix+[opt]`, flies the map to the real leg
+  end, prunes stale deeper levels, and time-chains `segmentNext`. Tap = small detail card
+  (times, fares pp + group, km, onward-options count, "Take this hop"). Breadcrumb, warnings,
+  Undo/Reset/Start journey all preserved.
+- **Scroll:** `.hop-tree-scroll { overflow-x:auto }` with fixed height.
+
+### 34.6 Do-not-regress (this session)
+- Map overlays must be `z-index ≥ 1000` (flow-sheet, news). `.map-wrap` stays `z-index:0`.
+- `clearTransient` must never reset `source`/`dest`/`userLoc`/`mode`/persisted choice — only transient
+  results/details/radius/path.
+- Backend stays green with exactly 104 tests; frontend tsc + vite build clean.
+
+---
+
+*End of VOYAGER v2 Master Knowledge Base — session **2026-08-04B**: full `IMPLEMENTATION_PLAN.md`
+execution. NEWS window fixed (top-left, `z-index:1000`); **backend stop-selection now prefers the
+nearest-to-destination stop** (one-go-to-destination; bus + metro) with a transfer-flag dedupe fix —
+104 tests green; left UI split into an input window + results window with clear-on-change
+(`clearTransient`); Nearby draws its radius circle; hop window is now a **horizontal SVG decision
+tree** (`HopTreeView`) replacing the vertical option cards. QA gate: `pytest tests/ -q` (104 passed),
+`npx tsc --noEmit` (0 errors), `npx vite build` clean, live smoke OK. See §34 for the record and
+§33.13 for the standing next-actions (Google billing → Gemini verify → live rides → PROMPT_8 →
+PROMPT_9). Before every commit: `git pull`, `pytest tests/ -q`, `npx tsc --noEmit`, then push. This
+file is fully self-contained — no old
 folder is needed.*

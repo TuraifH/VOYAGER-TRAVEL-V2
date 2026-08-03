@@ -1,88 +1,12 @@
 import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
-import type { HopOption, LatLng, Segment, SegmentResponse } from "../types";
+import type { HopOption, Segment, SegmentResponse } from "../types";
+import HopTreeView, { optionsForLevel } from "./HopTreeView";
 import "./SegmentFlowView.css";
 
-const MODE_META: Record<string, { icon: string; color: string; label: string }> = {
-  bus: { icon: "directions_bus", color: "#6c5ce7", label: "Bus" },
-  metro: { icon: "subway", color: "#00cec9", label: "Metro" },
-  train: { icon: "train", color: "#e17055", label: "Train" },
-  walk: { icon: "directions_walk", color: "#95a5a6", label: "Walk" },
-  ride: { icon: "local_taxi", color: "#f39c12", label: "Cab" },
-};
-
-function legColor(mode: string): string {
-  return MODE_META[mode]?.color ?? "#6c5ce7";
-}
-
-const MAX_VISIBLE = 10;
-const CATCH_BUFFER_MIN = 4; // catch-the-bus buffer (PROMPT_3 §3.2)
-
-function timeToMin(t?: string): number | null {
-  if (!t) return null;
-  const m = t.match(/(\d{1,2}):(\d{2})/);
-  if (!m) return null;
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
-// straight-line km between a stop and the final destination (progress indicator)
-function havKm(a: { lat: number; lng: number } | undefined, b: LatLng | null): number | null {
-  if (!a || !b) return null;
-  const R = 6371;
-  const dLa = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLo = ((b.lng - a.lng) * Math.PI) / 180;
-  const s = Math.sin(dLa / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * Math.sin(dLo / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
-}
-
-function dedupeOptions(options: HopOption[]): HopOption[] {
-  const seen = new Set<string>();
-  const out: HopOption[] = [];
-  for (const o of options) {
-    const key = `${o.mode}|${o.routeNumber ?? ""}|${(o.destinationStop?.name ?? "").toLowerCase()}|${o.departureTime ?? ""}|${o.fromStop?.name ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(o);
-  }
-  const rankMode = (m?: string) => (m === "bus" || m === "metro" || m === "train" ? 1 : 0);
-  out.sort((a, b) => {
-    const ta = Number(b.isTopRecommended ?? false) - Number(a.isTopRecommended ?? false);
-    if (ta !== 0) return ta;
-    return rankMode(b.mode) - rankMode(a.mode);
-  });
-  return out;
-}
-
-// client-side filter for a hop column: options must connect from the previously
-// chosen stop, depart after its arrival + catch buffer, and never route back to a
-// stop already on the journey (PROMPT_3 §T3 + §20 #37)
-function optionsForLevel(seg: Segment | undefined, confirmedUpTo: HopOption[], idx: number): HopOption[] {
-  if (!seg) return [];
-  const prev = idx > 0 ? confirmedUpTo[idx - 1] : null;
-  const prevStop = prev?.destinationStop?.name?.toLowerCase();
-  const prevArr = timeToMin(prev?.arrivalTime);
-  const visited = new Set<string>();
-  for (const c of confirmedUpTo) {
-    const n = c.destinationStop?.name?.toLowerCase();
-    if (n) visited.add(n);
-  }
-  let opts = (seg.options ?? []).filter((o) => {
-    if (prevStop) {
-      const cf = o.connectedFrom?.toLowerCase();
-      if (cf && cf !== prevStop) return false;
-      if (prevArr != null) {
-        const d = timeToMin(o.departureTime);
-        if (d != null && d < prevArr + CATCH_BUFFER_MIN) return false;
-      }
-    }
-    const dn = o.destinationStop?.name?.toLowerCase();
-    if (dn && visited.has(dn)) return false; // don't circle back to a used stop
-    return true;
-  });
-  return dedupeOptions(opts).slice(0, MAX_VISIBLE);
-}
+const legColor = (mode: string) =>
+  ({ bus: "#6c5ce7", metro: "#00cec9", train: "#e17055", walk: "#95a5a6", ride: "#f39c12" }[mode] ?? "#6c5ce7");
 
 export default function SegmentFlowView({ groupSize, budget }: { groupSize?: number; budget?: number }) {
   const gs = groupSize ?? 1;
@@ -90,7 +14,6 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
   const { source, dest, journey, setJourney, setFlyTo } = useApp();
   const [levels, setLevels] = useState<Segment[]>(journey.segments?.segments ?? []);
   const [confirmed, setConfirmed] = useState<HopOption[]>(journey.chosenLegs as HopOption[]);
-  const [currentIdx, setCurrentIdx] = useState(0);
   const [loading, setLoading] = useState(false);
   const [complete, setComplete] = useState(journey.segments?.journeyComplete ?? false);
   const [warnings, setWarnings] = useState<string[]>(journey.segments?.warnings ?? []);
@@ -130,7 +53,6 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
     const prefetchCount = optionsForLevel(prefetched, nextConfirmed, nextIdx).length;
     if (prefetched && prefetchCount > 0) {
       // fast client-side advance (pre-fetched segment, PROMPT_3 §T3)
-      setCurrentIdx(nextIdx);
       return;
     }
 
@@ -142,7 +64,6 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
       setLevels(newLevels);
       setComplete(!!r.journeyComplete);
       if (r.warnings?.length) setWarnings(r.warnings);
-      setCurrentIdx(nextIdx);
       setJourney({
         segments: { ...(journey.segments ?? {}), segments: newLevels } as SegmentResponse,
         chosenLegs: nextConfirmed,
@@ -153,26 +74,18 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
   };
 
   const goBack = () => {
-    const prevIdx = Math.max(0, currentIdx - 1);
-    setCurrentIdx(prevIdx);
-    setConfirmed(confirmed.slice(0, prevIdx));
-    setJourney({ chosenLegs: confirmed.slice(0, prevIdx) });
-    setLevels(levels.slice(0, prevIdx + 1));
+    setConfirmed(confirmed.slice(0, -1));
+    setJourney({ chosenLegs: confirmed.slice(0, -1) });
     setComplete(false);
   };
 
   const reset = () => {
     setConfirmed([]);
-    setCurrentIdx(0);
     setComplete(false);
     setWarnings([]);
     setJourney({ chosenLegs: [] });
     loadInitial();
   };
-
-  const seg = levels[currentIdx];
-  const shown = optionsForLevel(seg, confirmed, currentIdx);
-  const totalCount = seg?.options?.length ?? 0;
 
   const breadcrumb = useMemo(() => {
     const items: { label: string; mode?: string }[] = [];
@@ -223,78 +136,24 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
           <button className="btn ghost mt12" onClick={reset}>Reset journey</button>
         </div>
       ) : (
-        <div className="hop-col">
-          <div className="col-head">
-            Hop {currentIdx + 1}
-            {seg?.title && <span className="muted small"> — {seg.title}</span>}
-            <span className="muted small">({totalCount} options)</span>
-          </div>
+        <HopTreeView
+          levels={levels}
+          confirmed={confirmed}
+          source={source}
+          dest={dest}
+          complete={complete}
+          loading={loading}
+          onSelect={selectHop}
+        />
+      )}
 
-          <div className="hop-list">
-            {shown.map((opt, oi) => {
-              const meta = MODE_META[opt.mode ?? ""] ?? MODE_META.bus;
-              const selected = confirmed[currentIdx]?.optionId === opt.optionId;
-              const best = opt.isTopRecommended;
-              return (
-                <button
-                  key={opt.optionId || oi}
-                  className={`hop-card glass hover-lift ${selected ? "selected" : ""} ${opt.mode === "walk" ? "walk" : ""}`}
-                  style={{ borderLeftColor: meta.color }}
-                  onClick={() => selectHop(currentIdx, opt)}
-                  onMouseEnter={() => {
-                    if (opt.geometry?.length) {
-                      const lastPt = opt.geometry[opt.geometry.length - 1];
-                      setFlyTo({ lat: Number(lastPt[0]), lng: Number(lastPt[1]) });
-                    }
-                  }}
-                >
-                  <div className="spread">
-                    <span className="row">
-                      <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
-                      <b>{opt.mode === "walk" ? "Walk" : opt.routeNumber ?? meta.label}</b>
-                    </span>
-                    {best && <span className="badge gold">★ Top</span>}
-                  </div>
-                  <div className="small truncate mt4">
-                    → {opt.destinationStop?.name}
-                  </div>
-                  <div className="spread mt8">
-                    <span className="small">{opt.durationMin ?? "—"} min</span>
-                    {opt.distanceKm != null && opt.distanceKm > 0 && (
-                      <span className="small muted">{opt.distanceKm.toFixed(1)} km</span>
-                    )}
-                    {(() => {
-                      const dk = havKm(opt.destinationStop, dest);
-                      return dk != null
-                        ? <span className="small dest-progress">→ {dk.toFixed(1)} km to dest</span>
-                        : null;
-                    })()}
-                  </div>
-                  <div className="spread">
-                    {opt.departureTime && <span className="muted small">⏱ {opt.departureTime}</span>}
-                    <span className="small">{opt.fare != null ? `₹${opt.fare}` : opt.mode === "walk" ? "Free" : "—"}</span>
-                  </div>
-                  {opt.transitOptionsFromThisStop != null && (
-                    <div className="muted small mt4">↻ {opt.transitOptionsFromThisStop} onward options</div>
-                  )}
-                </button>
-              );
-            })}
-            {loading && <div className="skeleton hop-skel" />}
-            {!loading && shown.length === 0 && (
-              <div className="muted small mt8">No onward options from this stop before the catch window.</div>
-            )}
-          </div>
-
-          {confirmed.length > 0 && (
-            <div className="row mt8 gap">
-              <button className="btn ghost" onClick={goBack}>‹ Undo hop</button>
-              <button className="btn ghost" onClick={reset}>Reset</button>
-              <button className="btn full" onClick={() => setJourney({ active: true })}>
-                <span className="material-symbols-outlined">navigation</span> Start journey
-              </button>
-            </div>
-          )}
+      {confirmed.length > 0 && (
+        <div className="row mt8 gap">
+          <button className="btn ghost" onClick={goBack}>‹ Undo hop</button>
+          <button className="btn ghost" onClick={reset}>Reset</button>
+          <button className="btn full" onClick={() => setJourney({ active: true })}>
+            <span className="material-symbols-outlined">navigation</span> Start journey
+          </button>
         </div>
       )}
     </div>

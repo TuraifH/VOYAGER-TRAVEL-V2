@@ -452,6 +452,16 @@ class SegmentBuilder:
                                                 dest_lat, dest_lng)
             transfer = self._metro_transfer_stop(forward, board_node, dest_lat, dest_lng)
             if transfer:
+                key = (d.route_number, transfer[0])
+                existing = next((o for o in out
+                                 if o.get("routeNumber") == key[0]
+                                 and o["destinationStop"]["name"] == key[1]), None)
+                if existing:
+                    # destination-proximity pick already covers this transfer stop —
+                    # promote it to a flagged metro transfer instead of duplicating.
+                    existing["isMetroTransfer"] = True
+                    transfer_added += 1
+                    continue
                 opt = self._bus_ride_option(board_node, d, transfer, dest_lat, dest_lng,
                                             group_size, budget, connected_from, seg_num,
                                             not_running=not_running)
@@ -466,14 +476,18 @@ class SegmentBuilder:
 
         Skips the boarding stop itself (loop shapes list it twice — this caused
         "402-B -> yelahanka 5th phase" offered FROM 5th phase) and returns up to
-        MAX_ARRIVAL_STOPS_PER_ROUTE stops, each >= MIN_HOP_SPACING_M along the
-        route from the previously picked one, all passing forward-progress.
+        MAX_ARRIVAL_STOPS_PER_ROUTE stops, all passing forward-progress.
+
+        Destination-proximity preference (IMPLEMENTATION_PLAN Part 2): if a bus
+        can reach near the destination in one go, do NOT offer an earlier stop —
+        the arrival stop nearest the destination is offered first, then up to
+        MAX_ARRIVAL_STOPS_PER_ROUTE-1 more spaced picks (each >= MIN_HOP_SPACING_M
+        from every stop already chosen) so the user can still alight earlier.
         Falls back to the single nearest forward stop when the route is short.
         """
         board_resolved = self.gtfs.resolve_stop_name(board_node.name)
         board_low = (board_node.name or "").strip().lower()
-        picked: list[tuple] = []
-        min_dist = MIN_BUS_HOP_M
+        cands: list[tuple] = []
         for stop_name, slat, slng in forward:
             if not self._forward_progress(board_node.lat, board_node.lng,
                                           dest_lat, dest_lng, slat, slng):
@@ -481,19 +495,24 @@ class SegmentBuilder:
             low = (stop_name or "").strip().lower()
             if low == board_low or (board_resolved and low == board_resolved.strip().lower()):
                 continue
-            d_from_board = _hav(board_node.lat, board_node.lng, slat, slng)
-            if d_from_board < min_dist:
+            if _hav(board_node.lat, board_node.lng, slat, slng) < MIN_BUS_HOP_M:
                 continue
-            picked.append((stop_name, slat, slng))
-            min_dist = d_from_board + MIN_HOP_SPACING_M
-            if len(picked) >= MAX_ARRIVAL_STOPS_PER_ROUTE:
-                break
-        if not picked:
+            cands.append((stop_name, slat, slng,
+                          _hav(slat, slng, dest_lat, dest_lng)))
+        if not cands:
             for stop_name, slat, slng in forward:
                 if self._forward_progress(board_node.lat, board_node.lng,
                                           dest_lat, dest_lng, slat, slng):
-                    picked.append((stop_name, slat, slng))
-                    break
+                    return [(stop_name, slat, slng)]
+            return []
+        # nearest-to-destination first (the furthest-reaching hop is primary)
+        cands.sort(key=lambda c: c[3])
+        picked: list[tuple] = [(c[0], c[1], c[2]) for c in cands[:1]]
+        for stop_name, slat, slng, _d_to_dest in cands[1:]:
+            if len(picked) >= MAX_ARRIVAL_STOPS_PER_ROUTE:
+                break
+            if all(_hav(slat, slng, p[1], p[2]) >= MIN_HOP_SPACING_M for p in picked):
+                picked.append((stop_name, slat, slng))
         return picked
 
     def _metro_transfer_stop(self, forward, board_node, dest_lat, dest_lng):
@@ -569,7 +588,11 @@ class SegmentBuilder:
         lines = [ln.strip() for ln in (station_node.line or "Purple Line").split(",")]
         out: list[dict] = []
         for line in lines:
-            for fwd in self._metro_forward_stations(station_node, line, dest_lat, dest_lng):
+            fwds = self._metro_forward_stations(station_node, line, dest_lat, dest_lng)
+            # destination-proximity preference (IMPLEMENTATION_PLAN Part 2): prefer
+            # the station nearest the destination, keep at most a few options.
+            fwds.sort(key=lambda f: _hav(f[1], f[2], dest_lat, dest_lng))
+            for fwd in fwds[:MAX_ARRIVAL_STOPS_PER_ROUTE]:
                 dest_station, dlat, dlng = fwd[0], fwd[1], fwd[2]
                 duration, dist_m, path = self._metro_ride_duration(station_node.name,
                                                                    dest_station, line)

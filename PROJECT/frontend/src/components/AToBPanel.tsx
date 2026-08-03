@@ -7,9 +7,10 @@ import "./AToBPanel.css";
 type SubMode = "transit" | "ride" | "drive" | "walk";
 type TravelMode = "public" | "drive" | "walk";
 
-function Autocomplete({ label, color, value, onPick }: {
+function Autocomplete({ label, color, value, onPick, onType }: {
   label: string; color: string; value: string;
   onPick: (name: string, p: LatLng) => void;
+  onType: () => void;
 }) {
   const { userLoc } = useApp();
   const [q, setQ] = useState(value);
@@ -42,7 +43,7 @@ function Autocomplete({ label, color, value, onPick }: {
         className="text-input"
         placeholder={label}
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => { setQ(e.target.value); onType(); }}
       />
       <button className="locate-btn" onClick={pickCurrentLocation} title="Use current location">
         <span className="material-symbols-outlined">my_location</span>
@@ -89,9 +90,45 @@ function RideCard({ p, onSelect }: { p: RidePrice; onSelect: (p: RidePrice) => v
   );
 }
 
-export default function AToBPanel() {
+// ---------------------------------------------------------------- results window
+export function AtoBResults() {
+  const { source, dest, prices, fuel, setFlyTo, setRidePath } = useApp();
+
+  const selectRide = async (_p: RidePrice) => {
+    if (!source || !dest) return;
+    setFlyTo(dest);
+    try {
+      const route = await api.driveRoute(source, dest);
+      setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
+    } catch {
+      setRidePath(null);
+    }
+  };
+
+  const hasAny = (prices?.length ?? 0) > 0 || fuel != null;
+  if (!hasAny) {
+    return <div className="results-empty muted small">Ride prices and fuel estimates will appear here.</div>;
+  }
+
+  return (
+    <div className="rides">
+      {fuel != null && (
+        <div className="fuel-card glass anim-in">
+          <span className="row"><span className="material-symbols-outlined">local_gas_station</span>
+            <b>Fuel cost: ₹{fuel}</b></span>
+          <div className="muted small">At ₹110/L — approximate</div>
+        </div>
+      )}
+      {prices.map((p, i) => <RideCard key={i} p={p} onSelect={selectRide} />)}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- input window
+export default function AtoBInput() {
   const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces, setRidePath,
-          setFlowOpen, setFlowParams } = useApp();
+          setFlowOpen, setFlowParams, setPrices, setFuel, clearTransient } = useApp();
+  const setResults = ({ fuel }: { fuel?: number | null }) => setFuel(fuel ?? null);
   const [travelMode, setTravelMode] = useState<TravelMode>("public");
   const [subMode, setSubMode] = useState<SubMode>("transit");
   const [srcName, setSrcName] = useState("");
@@ -100,11 +137,9 @@ export default function AToBPanel() {
   const [budget, setBudget] = useState(500);
   const [mileage, setMileage] = useState(15);
   const [loading, setLoading] = useState(false);
-  const [rides, setRides] = useState<RidePrice[]>([]);
-  const [fuelCost, setFuelCost] = useState<number | null>(null);
 
-  const pickSource = (name: string, p: LatLng) => { setSource(p); setSrcName(name); };
-  const pickDest = (name: string, p: LatLng) => { setDest(p); setDstName(name); setFlyTo(p); };
+  const pickSource = (name: string, p: LatLng) => { clearTransient(); setSource(p); setSrcName(name); };
+  const pickDest = (name: string, p: LatLng) => { clearTransient(); setDest(p); setDstName(name); setFlyTo(p); };
 
   useEffect(() => {
     if (source) setSrcName(source.name ?? "");
@@ -121,15 +156,10 @@ export default function AToBPanel() {
     try {
       if (travelMode === "public" && subMode === "ride") {
         const p = await api.ridePrices(source, dest, groupSize);
-        setRides(p);
+        setPrices(p);
         setFlowOpen(false);
       } else if (travelMode === "public" && subMode === "transit") {
         setFlowOpen(true);   // hop window = bottom sheet over the map
-      } else if (travelMode === "drive") {
-        // fuel cost via distance (GraphHopper driving distance from maps directions)
-        const dir = await api.ridePrices(source, dest, 1); // triggers directions distance indirectly
-        setRides(dir); // reuse ladder to show drive estimate + fuel note
-        setFlowOpen(false);
       } else {
         setFlowOpen(true);
       }
@@ -141,28 +171,18 @@ export default function AToBPanel() {
   const startDrive = async () => {
     if (!source || !dest) return;
     setLoading(true);
+    clearTransient();
     try {
       const route = await api.driveRoute(source, dest);
       setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
       const distKm = (route.distance_m ?? 0) / 1000;
       const fuel = (110.0 * distKm) / mileage;
-      setFuelCost(Math.round(fuel * 100) / 100);
+      setResults({ fuel: Math.round(fuel * 100) / 100 });
     } catch {
-      setFuelCost(null);
       setRidePath(null);
+      setFuel(null);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const selectRide = async (p: RidePrice) => {
-    if (!source || !dest) return;
-    setFlyTo(dest);
-    try {
-      const route = await api.driveRoute(source, dest);
-      setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
-    } catch {
-      setRidePath(null);
     }
   };
 
@@ -184,12 +204,12 @@ export default function AToBPanel() {
       )}
 
       <div className="inputs">
-        <Autocomplete label="Source" color="#27ae60" value={srcName} onPick={pickSource} />
+        <Autocomplete label="Source" color="#27ae60" value={srcName} onPick={pickSource} onType={clearTransient} />
         <div className="swap-row">
           <span className="connector" />
           <button className="swap-btn" onClick={swap} title="Swap"><span className="material-symbols-outlined">swap_vert</span></button>
         </div>
-        <Autocomplete label="Destination" color="#eb5757" value={dstName} onPick={pickDest} />
+        <Autocomplete label="Destination" color="#eb5757" value={dstName} onPick={pickDest} onType={clearTransient} />
       </div>
 
       <div className="params row">
@@ -213,20 +233,6 @@ export default function AToBPanel() {
         {loading ? <span className="spinner inline" /> : <span className="material-symbols-outlined">route</span>}
         {travelMode === "drive" ? "Estimate drive" : subMode === "ride" ? "Get ride prices" : "Find routes"}
       </button>
-
-      {travelMode === "drive" && fuelCost != null && (
-        <div className="fuel-card glass anim-in">
-          <span className="row"><span className="material-symbols-outlined">local_gas_station</span>
-            <b>Fuel cost: ₹{fuelCost}</b></span>
-          <div className="muted small">At ₹110/L, {mileage} km/L — approximate</div>
-        </div>
-      )}
-
-      {travelMode === "public" && subMode === "ride" && rides.length > 0 && (
-        <div className="rides">
-          {rides.map((p, i) => <RideCard key={i} p={p} onSelect={() => selectRide(p)} />)}
-        </div>
-      )}
     </div>
   );
 }

@@ -18,6 +18,7 @@
 .spinner.inline { display: inline-block; width: 16px; height: 16px; border-width: 2px; }
 
 .results { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.results-empty { padding: 18px 6px; text-align: center; }
 .place-card { padding: 12px; border-left: 3px solid var(--score-yellow); cursor: pointer; }
 .place-name { font-weight: 700; font-size: 15px; }
 .small { font-size: 12px; }
