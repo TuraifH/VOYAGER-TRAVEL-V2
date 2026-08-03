@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Circle, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { useApp, scoreClass } from "../context/AppContext";
@@ -56,6 +56,24 @@ function legGeometry(opt: HopOption): Coord[] {
   if (!g) return [];
   // geometry comes from the API as [lat, lng]; Leaflet wants [lat, lng]
   return g.map((pt: number[]) => [Number(pt[0]), Number(pt[1])]) as Coord[];
+}
+
+function NearbyRadius() {
+  const { nearbyBase } = useApp();
+  if (!nearbyBase || !inBengaluru(nearbyBase.lat, nearbyBase.lng)) return null;
+  return (
+    <Circle
+      center={[nearbyBase.lat, nearbyBase.lng]}
+      radius={nearbyBase.radiusM}
+      pathOptions={{
+        color: "#6c5ce7",
+        fillColor: "#6c5ce7",
+        fillOpacity: 0.08,
+        dashArray: "6 6",
+        weight: 2,
+      }}
+    />
+  );
 }
 
 function RoutePolylines() {
@@ -208,6 +226,7 @@ export default function MapView() {
       />
       <FlyController target={flyTo} />
       <Pins />
+      <NearbyRadius />
       <RoutePolylines />
       <JourneyPosition />
     </MapContainer>
