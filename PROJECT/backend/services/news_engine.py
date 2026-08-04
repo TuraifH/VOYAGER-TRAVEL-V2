@@ -1,7 +1,7 @@
 """News engine (PROMPT_5 §4) — background refresh loop + cached serving.
 
 Loop every NEWS_INTERVAL_MIN (default 8) minutes:
-1. Scrape r/bangalore (Reddit JSON via proxy) + Karnataka news via DDG fallback.
+1. Fetch Bengaluru news via the **NewsAPI.org API** (real headlines, no scraping).
 2. Classify each item: traffic | weather | event | general.
 3. Geo-tag when a known locality/landmark appears -> lat/lng (map marker).
 4. LLM summarize each item into <=2 lines (allowed: summary only).
@@ -10,8 +10,10 @@ Loop every NEWS_INTERVAL_MIN (default 8) minutes:
 Serving: GET /api/search/news?lat=&lng= filters by relevance (geo proximity +
 keyword match), sorted by recency. Cache served even when the loop fails; the
 UI shows an "Offline" state rather than fake headlines.
+
+No-key/API-down fallback: the old Reddit/DDG fetch paths are kept purely as a
+last resort so the app still works out-of-the-box — data stays real either way.
 """
-import json
 import logging
 import threading
 import time
@@ -27,6 +29,15 @@ logger = logging.getLogger(__name__)
 _TTL_S = 4 * 3600
 _MAX_ITEMS = 25
 _RND = 3
+
+_NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
+_NEWSAPI_QUERIES = ("Bengaluru", "Bangalore traffic", "Karnataka rain")
+
+# Strict Bangalore-only gate: an article must mention the city or one of the
+# known localities to be shown. Free-tier NewsAPI matches the query anywhere in
+# the article (even a passing mention), which lets unrelated India/world news
+# through — this filter is what keeps the feed Bangalore-specific.
+_BANGALORE_MARKERS = ("bengaluru", "bangalore", "blr", "b'lore")
 
 # Known Bangalore localities/landmarks -> coords (geo-tagging table)
 _LOCALITIES = {
@@ -91,10 +102,14 @@ class NewsEngine:
 
     def _merge(self, fresh: list[dict]) -> None:
         with self._lock:
-            combined = fresh + [it for it in self._items
-                                if it["title"] not in {f["title"] for f in fresh}]
+            fresh_titles = {f.get("title") for f in fresh}
+            # TTL expires stale CACHED items; the just-fetched batch always
+            # survives (NewsAPI free tier serves articles ~24h old, which would
+            # otherwise be dropped on arrival by a 4h TTL).
+            cached = [it for it in self._items if it.get("title") not in fresh_titles]
             now = time.time()
-            combined = [it for it in combined if now - it.get("ts", now) < _TTL_S]
+            cached = [it for it in cached if now - it.get("ts", now) < _TTL_S]
+            combined = fresh + cached
             combined.sort(key=lambda it: it.get("ts", 0), reverse=True)
             self._items = combined[:_MAX_ITEMS]
 
@@ -120,10 +135,12 @@ class NewsEngine:
             time.sleep(self._interval_min * 60)
 
     def refresh_once(self) -> int:
-        """Scrape + classify + tag + summarize. Returns item count."""
-        items = []
-        items += self._scrape_reddit()
-        items += self._scrape_news_fallback()
+        """Fetch news (NewsAPI.org primary, scrapers as no-key fallback)
+        + classify + tag + summarize. Returns item count."""
+        items = self._fetch_newsapi()
+        if not items:
+            items += self._scrape_reddit()
+            items += self._scrape_news_fallback()
         items = self._dedup(items)
         for it in items:
             it["category"] = self._classify(it.get("title", ""))
@@ -134,6 +151,47 @@ class NewsEngine:
         return len(self._items)
 
     # ---------------------------------------------------------------- sources
+    def _fetch_newsapi(self) -> list[dict]:
+        """Primary source: NewsAPI.org `everything` endpoint (real headlines).
+
+        No API key -> returns [] (the caller falls back to the scrapers).
+        Never fabricates: articles come straight from the API response.
+        """
+        key = config.NEWS_API_KEY
+        if not key:
+            logger.info("[news] NEWS_API_KEY not set — falling back to scrapers")
+            return []
+        out: list[dict] = []
+        for query in _NEWSAPI_QUERIES:
+            try:
+                resp = requests.get(
+                    _NEWSAPI_ENDPOINT,
+                    params={"q": query, "sortBy": "publishedAt", "pageSize": 20,
+                            "language": "en", "searchIn": "title,description",
+                            "apiKey": key},
+                    timeout=10,
+                    headers={"User-Agent": "Mozilla/5.0 (VOYAGER news engine)"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                for a in data.get("articles", []):
+                    title = (a.get("title") or "").strip()
+                    if not title:
+                        continue
+                    if not self._is_bangalore(title):
+                        continue
+                    ts = _parse_iso(a.get("publishedAt")) or time.time()
+                    out.append({
+                        "title": title,
+                        "text": (a.get("description") or "")[:400],
+                        "url": a.get("url") or "",
+                        "source": (a.get("source") or {}).get("name") or "newsapi",
+                        "ts": ts,
+                    })
+            except (requests.RequestException, ValueError) as exc:
+                logger.warning("[news] newsapi(%s) failed: %s", query, exc)
+        return out
+
     def _fetch(self, url: str, timeout: float = 10.0,
                params: dict | None = None) -> requests.Response | None:
         """Fetch via the proxy when configured, else a plain direct request.
@@ -214,10 +272,23 @@ class NewsEngine:
                 return cat
         return "general"
 
+    def _is_bangalore(self, title: str, description: str = "") -> bool:
+        """Strict Bangalore gate.
+
+        The headline itself must be about Bangalore: the city name (or a known
+        locality) must appear in the TITLE. A passing mention in the article
+        body/description does NOT qualify — that's what lets "Anthropic brings
+        Claude to India" style stories through otherwise.
+        """
+        low = title.lower()
+        if any(m in low for m in _BANGALORE_MARKERS):
+            return True
+        return any(_contains_word(loc, low) for loc in _LOCALITIES)
+
     def _geo_tag(self, text: str) -> dict | None:
         low = text.lower()
         for name, (lat, lng) in _LOCALITIES.items():
-            if name in low:
+            if _contains_word(name, low):
                 return {"name": name, "lat": lat, "lng": lng}
         return None
 
@@ -259,6 +330,28 @@ class NewsEngine:
         for it in items:
             it.setdefault("summary", "")
         return items[:limit]
+
+
+def _parse_iso(value: str | None) -> float | None:
+    """ISO-8601 timestamp -> epoch seconds (NewsAPI publishes like
+    "2026-08-04T09:30:00Z"). None when unparsable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _contains_word(needle: str, haystack: str) -> bool:
+    """True when `needle` appears in `haystack` as a whole word/words.
+
+    Word-boundary aware so "hebbal" does NOT match "Hebbalkar", while the
+    multi-word "outer ring road" still matches "outer ring road traffic".
+    """
+    import re
+
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
 
 
 def _haversine_km(lat1, lng1, lat2, lng2) -> float:

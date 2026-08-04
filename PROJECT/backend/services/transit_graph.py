@@ -12,7 +12,6 @@ import math
 import time
 
 from .data_schema import TransitNode
-from .transit_models import Leg
 
 BUS_SPEED_KMH = 18.0
 METRO_SPEED_KMH = 36.0

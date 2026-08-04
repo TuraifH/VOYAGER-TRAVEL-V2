@@ -8,7 +8,6 @@ import TripInput, { TripResults } from "../components/TripPanel";
 import DiscoveryPanel from "../components/DiscoveryPanel";
 import NewsPopup from "../components/NewsPopup";
 import SegmentFlowView from "../components/SegmentFlowView";
-import type { LatLng } from "../types";
 import "./MainPage.css";
 
 const TABS: { key: Mode; label: string; icon: string }[] = [
@@ -62,7 +61,7 @@ export default function MainPage() {
     <div className="app-shell">
       <HeaderBar />
       <div className="app-body">
-        <aside className="input-window glass-strong visible">
+        <aside className="input-window glass-strong">
           {mode === "search" && <SearchInput />}
           {mode === "atob" && <AToBInput />}
           {mode === "trip" && <TripInput />}
@@ -76,7 +75,6 @@ export default function MainPage() {
 
         <main className="map-wrap">
           <MapView />
-          <NewsPopup />
           {flowOpen && (
             <section className="flow-sheet glass-strong" style={{ height: `${flowH}%` }}>
               <div className="resize-handle" onMouseDown={startResize} title="Drag to resize">
@@ -96,6 +94,8 @@ export default function MainPage() {
           )}
         </main>
 
+        <NewsPopup />
+
         <DiscoveryPanel />
       </div>
 
@@ -113,10 +113,4 @@ export default function MainPage() {
       </nav>
     </div>
   );
-}
-
-// helper to fly somewhere from anywhere
-export function flyToPoint(map: unknown, point: LatLng, zoom = 15) {
-  const anyMap = map as { flyTo?: (c: LatLng, z: number) => void };
-  anyMap?.flyTo?.({ lat: point.lat, lng: point.lng }, zoom);
 }

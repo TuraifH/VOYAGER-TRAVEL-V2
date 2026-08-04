@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import type { Coord, LatLng, LiveContext, NewsItem, PlaceDetails, PlaceResult, RidePrice, SegmentResponse, WeatherNow } from "../types";
+import type { Coord, LatLng, NewsItem, PlaceDetails, PlaceResult, RidePrice, SegmentResponse, WeatherNow } from "../types";
 
 export type Mode = "search" | "atob" | "trip";
 
@@ -69,9 +69,6 @@ interface AppState {
   flowParams: { groupSize: number; budget: number };
   setFlowParams: (p: { groupSize: number; budget: number }) => void;
 
-  liveContext: LiveContext | null;
-  setLiveContext: (c: LiveContext | null) => void;
-
   news: NewsItem[];
   setNews: (n: NewsItem[]) => void;
 
@@ -106,7 +103,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [ridePath, setRidePath] = useState<Coord[] | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
   const [flowParams, setFlowParams] = useState({ groupSize: 1, budget: 500 });
-  const [liveContext, setLiveContext] = useState<LiveContext | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [journey, setJourneyState] = useState<JourneyState>({
     segments: null,
@@ -160,12 +156,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     nearbyBase, setNearbyBase, clearTransient,
     ridePath, setRidePath,
     flowOpen, setFlowOpen, flowParams, setFlowParams,
-    liveContext, setLiveContext,
     news, setNews,
     journey, setJourney,
     flyTo, setFlyTo,
   }), [mode, dark, userLoc, source, dest, weather, places, searchResults, hoveredPlaceId, pinned, searching, searched, radiusKm,
-      selected, showDiscovery, prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, flyTo]);
+      selected, showDiscovery, prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, news, journey, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
@@ -182,10 +177,4 @@ export function scoreClass(score: number | null | undefined): "green" | "yellow"
   if (score >= 50) return "yellow";
   if (score >= 30) return "orange";
   return "red";
-}
-
-export function scoreColor(score: number | null | undefined): string {
-  const c = scoreClass(score);
-  const map = { green: "var(--score-green)", yellow: "var(--score-yellow)", orange: "var(--score-orange)", red: "var(--score-red)" };
-  return map[c];
 }

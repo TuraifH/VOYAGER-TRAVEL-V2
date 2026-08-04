@@ -124,14 +124,6 @@ html.dark .score-pill.yellow { color: var(--score-yellow); }
 .score-pill.orange { background: rgba(242, 153, 74, 0.15); color: var(--score-orange); border: 1px solid rgba(242, 153, 74, 0.4); }
 .score-pill.red { background: rgba(235, 87, 87, 0.15); color: var(--score-red); border: 1px solid rgba(235, 87, 87, 0.4); }
 
-.score-bar {
-  height: 6px;
-  border-radius: 999px;
-  background: rgba(120, 130, 160, 0.2);
-  overflow: hidden;
-}
-.score-bar > span { display: block; height: 100%; border-radius: 999px; }
-
 /* ============================================================ badges */
 .badge {
   display: inline-flex;
@@ -147,10 +139,6 @@ html.dark .score-pill.yellow { color: var(--score-yellow); }
 .badge.live { background: rgba(231, 76, 60, 0.15); color: var(--error); border: 1px solid rgba(231, 76, 60, 0.35); }
 .badge.est { background: rgba(243, 156, 18, 0.15); color: #b7791f; border: 1px solid rgba(243, 156, 18, 0.4); }
 html.dark .badge.est { color: var(--warn); }
-.badge.approx { background: rgba(120, 130, 160, 0.15); color: var(--text-2); border: 1px dashed rgba(120, 130, 160, 0.5); }
-.badge.best { background: rgba(253, 121, 168, 0.16); color: var(--accent); border: 1px solid rgba(253, 121, 168, 0.4); }
-.badge.gold { background: linear-gradient(135deg, rgba(242,201,76,0.25), rgba(242,153,74,0.2)); color: #b8860b; border: 1px solid rgba(242, 201, 76, 0.5); }
-html.dark .badge.gold { color: var(--score-yellow); }
 
 /* ============================================================ skeleton */
 .skeleton {
@@ -294,6 +282,7 @@ html.dark .leaflet-container { background: #0d111f; }
 .muted { color: var(--text-3); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row { display: flex; align-items: center; gap: 8px; }
+.gap { gap: 12px; }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .mt8 { margin-top: 8px; }
 .mt12 { margin-top: 12px; }

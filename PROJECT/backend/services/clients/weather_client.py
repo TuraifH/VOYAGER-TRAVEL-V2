@@ -35,6 +35,8 @@ class WeatherClient:
                 "latitude": lat,
                 "longitude": lng,
                 "current": "temperature_2m,weather_code,relative_humidity_2m,wind_speed_10m,is_day",
+                "hourly": "temperature_2m,weather_code,precipitation_probability",
+                "forecast_hours": 12,
                 "minutely_15": "precipitation_probability",
                 "forecast_minutely_15": 8,
                 "timezone": "auto",
@@ -47,6 +49,20 @@ class WeatherClient:
             probs = data.get("minutely_15", {}).get("precipitation_probability", [])
             if probs:
                 rain_next_hour = any((p or 0) >= 30 for p in probs[:4])
+            # next 6 hours for the header popover (additive; old clients ignore it)
+            hourly: list[dict] = []
+            h = data.get("hourly", {})
+            h_times = h.get("time", [])
+            h_temps = h.get("temperature_2m", [])
+            h_codes = h.get("weather_code", [])
+            h_probs = h.get("precipitation_probability", [])
+            for i in range(min(6, len(h_times))):
+                hourly.append({
+                    "time": h_times[i],
+                    "temp_c": h_temps[i] if i < len(h_temps) else None,
+                    "condition": _weather_code_label(h_codes[i] if i < len(h_codes) else None),
+                    "rain_prob": h_probs[i] if i < len(h_probs) else None,
+                })
             out = {
                 "temp_c": current.get("temperature_2m"),
                 "condition": _weather_code_label(current.get("weather_code")),
@@ -55,6 +71,7 @@ class WeatherClient:
                 "wind_kmh": current.get("wind_speed_10m"),
                 "is_day": bool(current.get("is_day", 1)),
                 "rain_next_hour": rain_next_hour,
+                "hourly": hourly,
                 "source": "open-meteo",
             }
         except (requests.RequestException, ValueError) as exc:

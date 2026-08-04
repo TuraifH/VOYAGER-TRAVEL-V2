@@ -78,7 +78,13 @@ class TestNews:
         fresh = e._dedup(items)  # dedup removes case-duplicate only; TTL is in _merge
         assert len(fresh) == 2
 
-        e._merge(fresh)  # _merge applies TTL on already-deduped input
+        # the just-fetched batch always survives merge — NewsAPI free tier serves
+        # articles ~24h old, which a 4h TTL would drop on arrival otherwise
+        e._merge(fresh)
+        assert len(e._items) == 2
+
+        # TTL expires stale CACHED items (not part of the fresh batch)
+        e._merge([])
         assert len(e._items) == 1
         assert e._items[0]["title"] == "Metro delay at Majestic"
 

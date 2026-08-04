@@ -138,7 +138,6 @@ html.dark .results-window {
   line-height: 1;
 }
 .flow-sheet .icon-btn:hover { background: rgba(120, 130, 160, 0.15); }
-.dest-progress { color: var(--text-2); white-space: nowrap; }
 
 .bottom-nav {
   position: fixed;
