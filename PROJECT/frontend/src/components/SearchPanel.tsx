@@ -164,33 +164,29 @@ export function SearchResults() {
     );
   }
 
+  if (!searched) return null; // idle: nothing was searched yet — no placeholder box
+
   if (searchResults.length === 0) {
     return (
       <motion.div
         className="results-empty"
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.25, ease: EASE }}
+        transition={{ duration: 0.2, ease: EASE }}
       >
-        {searched ? (
-          <>
-            <motion.span
-              className="empty-icon material-symbols-outlined"
-              initial={{ scale: 0.6, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: "spring", stiffness: 400, damping: 24, delay: 0.1 }}
-            >search_off</motion.span>
-            <div className="small">No places found at {radiusKm} km.</div>
-            <button
-              className="btn ghost small mt8"
-              onClick={() => { setRadiusKm(Math.min(RANGE_MAX, radiusKm + 3)); window.dispatchEvent(new CustomEvent(RERUN_EVENT)); }}
-            >
-              <span className="material-symbols-outlined">zoom_out_map</span> Widen search radius
-            </button>
-          </>
-        ) : (
-          <div className="muted small">Results will appear here. Search for a place or run a Nearby search.</div>
-        )}
+        <motion.span
+          className="empty-icon material-symbols-outlined"
+          initial={{ scale: 0.6, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: "spring", stiffness: 400, damping: 24, delay: 0.1 }}
+        >search_off</motion.span>
+        <div className="small">No places found at {radiusKm} km.</div>
+        <button
+          className="btn ghost small mt8"
+          onClick={() => { setRadiusKm(Math.min(RANGE_MAX, radiusKm + 3)); window.dispatchEvent(new CustomEvent(RERUN_EVENT)); }}
+        >
+          <span className="material-symbols-outlined">zoom_out_map</span> Widen search radius
+        </button>
       </motion.div>
     );
   }
@@ -416,6 +412,7 @@ export default function SearchInput() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -8, scale: 0.98 }}
               transition={{ duration: 0.22, ease: EASE }}
+              layout
             >
               <div className="search-box">
                 <input
@@ -502,6 +499,7 @@ export default function SearchInput() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -8, scale: 0.98 }}
               transition={{ duration: 0.22, ease: EASE }}
+              layout
             >
               {pinned && (
                 <div className="pinned-banner glass anim-in">

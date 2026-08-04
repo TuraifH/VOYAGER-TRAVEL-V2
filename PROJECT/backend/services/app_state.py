@@ -18,6 +18,7 @@ from .train_service import TrainService
 from .proxy_manager import ProxyManager
 from .traffic_model import TrafficSlowdownModel
 from .trip_planner import TripPlannerService
+from .. import config
 from .langgraph.agent import VoyagerLangGraph
 
 _gtfs: GTFSService | None = None
@@ -58,7 +59,7 @@ def _load_all():
     if _search is None:
         _search = SearchService(GoogleMapsClient(), SerpAPIClient())
     if _news is None:
-        _news = NewsEngine(ProxyManager())
+        _news = NewsEngine(ProxyManager(), cache_path=config.NEWS_CACHE_PATH)
     if _trains is None:
         _trains = TrainService()
     if _traffic is None:

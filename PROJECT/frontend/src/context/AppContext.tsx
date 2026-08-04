@@ -137,6 +137,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clearTransient = () => {
     setPlaces([]);
     setSearchResults([]);
+    setSearched(false);
     setPinned(null);
     setSelected(null);
     setShowDiscovery(false);
@@ -169,7 +170,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     trip, setTrip,
     flyTo, setFlyTo,
   }), [mode, dark, userLoc, source, dest, weather, places, searchResults, pinned, selected, showDiscovery,
-      prices, fuel, quickPlans, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, trip, flyTo]);
+      prices, fuel, quickPlans, nearbyBase, ridePath, flowOpen, flowParams, news, journey, trip, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

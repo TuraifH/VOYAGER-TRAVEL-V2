@@ -14,9 +14,11 @@ UI shows an "Offline" state rather than fake headlines.
 No-key/API-down fallback: the old Reddit/DDG fetch paths are kept purely as a
 last resort so the app still works out-of-the-box — data stays real either way.
 """
+import json
 import logging
 import threading
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 
 import requests
@@ -29,9 +31,30 @@ logger = logging.getLogger(__name__)
 _TTL_S = 4 * 3600
 _MAX_ITEMS = 25
 _RND = 3
+# Items persisted to disk survive the 4h in-memory TTL (NewsAPI free-tier
+# quota exhausts daily). Serve them flagged `stale` for up to 72h so the feed
+# never goes empty once the quota is gone.
+_CACHE_MAX_AGE_S = 72 * 3600
 
 _NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
 _NEWSAPI_QUERIES = ("Bengaluru", "Bangalore traffic", "Karnataka rain")
+# NewsAPI free tier allows 100 requests/day. The 3-query batch + 8-min loop
+# would burn 540/day, so: never call more often than _NEWSAPI_MIN_INTERVAL_S,
+# and on a 429/401/403/426 back off for _NEWSAPI_BLOCK_S entirely.
+_NEWSAPI_MIN_INTERVAL_S = 6 * 3600
+_NEWSAPI_BLOCK_S = 12 * 3600
+# fallback scrapers (Reddit/DDG) also get rate-limited/captcha'd when hammered:
+# run them at most every _SCRAPE_MIN_INTERVAL_S, and only when the store is stale.
+_SCRAPE_MIN_INTERVAL_S = 30 * 60
+
+# DDG "news" queries surface aggregator dashboards (TomTom index, ViaMichelin,
+# trafficonmaps, ...) that are NOT real articles — filter those titles out.
+_JUNK_TITLE_TOKENS = (
+    "tomtom", "viamichelin", "trafficonmaps", "traffic index", "congestion-map",
+    "congestion map", "dashboard", "utility", "map and updates",
+    "latest news, photos and videos", "traffic news for today",
+    "real-time road traffic", "real-time traffic",
+)
 
 # Strict Bangalore-only gate: an article must mention the city or one of the
 # known localities to be shown. Free-tier NewsAPI matches the query anywhere in
@@ -78,12 +101,17 @@ _CLASSIFY_KEYWORDS = {
 
 
 class NewsEngine:
-    def __init__(self, proxy: ProxyManager | None = None, interval_min: int = 8):
+    def __init__(self, proxy: ProxyManager | None = None, interval_min: int = 8,
+                 cache_path: str | Path | None = None):
         self._proxy = proxy or ProxyManager()
         self._interval_min = interval_min
+        self._cache_path = Path(cache_path) if cache_path else None
         self._lock = threading.Lock()
         self._items: list[dict] = []
         self._last_run = 0.0
+        self._last_scrape = 0.0
+        self._newsapi_last_ok = 0.0
+        self._newsapi_blocked_until = 0.0
         self._running = False
         self._stop = False
         self._thread: threading.Thread | None = None
@@ -105,18 +133,57 @@ class NewsEngine:
             fresh_titles = {f.get("title") for f in fresh}
             # TTL expires stale CACHED items; the just-fetched batch always
             # survives (NewsAPI free tier serves articles ~24h old, which would
-            # otherwise be dropped on arrival by a 4h TTL).
+            # otherwise be dropped on arrival by a 4h TTL). `stale` items are
+            # disk-restored last-known-good headlines — they outlive the TTL
+            # so the feed keeps showing real articles after the quota is gone.
             cached = [it for it in self._items if it.get("title") not in fresh_titles]
             now = time.time()
-            cached = [it for it in cached if now - it.get("ts", now) < _TTL_S]
+            cached = [it for it in cached if it.get("stale") or now - it.get("ts", now) < _TTL_S]
             combined = fresh + cached
             combined.sort(key=lambda it: it.get("ts", 0), reverse=True)
             self._items = combined[:_MAX_ITEMS]
+        self._persist()
+
+    # ---------------------------------------------------------------- disk cache
+    def _persist(self) -> None:
+        """Snapshot the store to disk so the feed survives restarts + quota loss."""
+        if not self._cache_path:
+            return
+        try:
+            with self._lock:
+                if not self._items:
+                    return  # never overwrite a good snapshot with an empty store
+                data = list(self._items)
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            self._cache_path.write_text(json.dumps(data, ensure_ascii=False))
+        except (OSError, ValueError):  # noqa: BLE001 — never fatal
+            logger.warning("[news] persist failed: %s", self._cache_path)
+
+    def _load_cache(self) -> None:
+        """Restore last-known-good headlines (<=72h old) as `stale` items."""
+        if not self._cache_path or not self._cache_path.exists():
+            return
+        try:
+            with self._lock:
+                data = list(self._items)
+            now = time.time()
+            data = json.loads(self._cache_path.read_text())
+            items = [it for it in data if now - it.get("ts", now) < _CACHE_MAX_AGE_S]
+            for it in items:
+                it.setdefault("category", "general")
+                if now - it.get("ts", now) > _TTL_S:
+                    it["stale"] = True
+            with self._lock:
+                self._items = items
+            logger.info("[news] restored %d item(s) from disk cache", len(items))
+        except (OSError, ValueError):
+            pass
 
     # ---------------------------------------------------------------- loop
     def start(self) -> None:
         if self._running:
             return
+        self._load_cache()
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="news-loop")
         self._thread.start()
@@ -137,8 +204,17 @@ class NewsEngine:
     def refresh_once(self) -> int:
         """Fetch news (NewsAPI.org primary, scrapers as no-key fallback)
         + classify + tag + summarize. Returns item count."""
+        now = time.time()
+        with self._lock:
+            oldest = min((it.get("ts", now) for it in self._items), default=0.0)
+        # Store is still fresh (or was just refreshed): skip everything.
+        # Source quotas are small (NewsAPI 100/day, DDG captcha-prone) and an
+        # 8-min re-fetch is pointless against a 4h TTL.
+        if now - self._last_run < self._interval_min * 60 and now - oldest < _TTL_S:
+            return len(self._items)
         items = self._fetch_newsapi()
-        if not items:
+        if not items and now - self._last_scrape > _SCRAPE_MIN_INTERVAL_S:
+            self._last_scrape = now
             items += self._scrape_reddit()
             items += self._scrape_news_fallback()
         items = self._dedup(items)
@@ -147,6 +223,10 @@ class NewsEngine:
             geo = self._geo_tag(it.get("title", "") + " " + it.get("text", ""))
             it["geo"] = geo
         self._merge(items)
+        if not self._items:
+            # Everything expired (e.g. quota exhausted for >4h): fall back to
+            # the last-known-good snapshot so the feed never shows empty.
+            self._load_cache()
         self._last_run = time.time()
         return len(self._items)
 
@@ -156,13 +236,27 @@ class NewsEngine:
 
         No API key -> returns [] (the caller falls back to the scrapers).
         Never fabricates: articles come straight from the API response.
+        Rate-limit aware: after a 429/401/403/426 the key is left alone for
+        _NEWSAPI_BLOCK_S (free tier quota is tiny and the 8-min loop would
+        otherwise burn it within hours), and even healthy keys are only queried
+        once per _NEWSAPI_MIN_INTERVAL_S.
         """
         key = config.NEWS_API_KEY
+        now = time.time()
         if not key:
             logger.info("[news] NEWS_API_KEY not set — falling back to scrapers")
             return []
+        if now < self._newsapi_blocked_until:
+            logger.info("[news] newsapi rate-limited — backing off until %s",
+                        datetime.fromtimestamp(self._newsapi_blocked_until, timezone.utc).isoformat(timespec="minutes"))
+            return []
+        if now - self._newsapi_last_ok < _NEWSAPI_MIN_INTERVAL_S:
+            logger.info("[news] newsapi within cooldown — skipping (quota conservation)")
+            return []
         out: list[dict] = []
+        saw_ok = False
         for query in _NEWSAPI_QUERIES:
+            resp = None
             try:
                 resp = requests.get(
                     _NEWSAPI_ENDPOINT,
@@ -188,8 +282,15 @@ class NewsEngine:
                         "source": (a.get("source") or {}).get("name") or "newsapi",
                         "ts": ts,
                     })
+                saw_ok = True
+            except requests.HTTPError as exc:
+                if resp is not None and resp.status_code in (401, 403, 426, 429):
+                    self._newsapi_blocked_until = now + _NEWSAPI_BLOCK_S
+                logger.warning("[news] newsapi(%s) failed: %s", query, exc)
             except (requests.RequestException, ValueError) as exc:
                 logger.warning("[news] newsapi(%s) failed: %s", query, exc)
+        if saw_ok:
+            self._newsapi_last_ok = now
         return out
 
     def _fetch(self, url: str, timeout: float = 10.0,
@@ -236,7 +337,7 @@ class NewsEngine:
     def _scrape_news_fallback(self) -> list[dict]:
         """DuckDuckGo news search via proxy (Karnataka/Bangalore queries)."""
         out = []
-        for query in ("Bangalore traffic today", "Karnataka rain alert", "Bengaluru news"):
+        for query in ("Bangalore news today", "Bengaluru news", "Karnataka rain alert"):
             items = self._ddg_news(query)
             if items:
                 out.extend(items)
@@ -248,18 +349,23 @@ class NewsEngine:
                 "https://html.duckduckgo.com/html/",
                 params={"q": query, "ia": "news"},
                 timeout=10)
-            if resp is None:
+            # DDG returns 202/anomaly pages when throttled — treat as no results.
+            if resp is None or resp.status_code != 200:
                 return []
             html = resp.text
-            titles = []
             import re
 
-            for m in re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.S)[:8]:
-                clean = re.sub(r"<[^>]+>", "", m).strip()
-                if clean:
-                    titles.append(clean)
-            return [{"title": t, "text": "", "url": "",
-                     "source": "news-aggregate", "ts": time.time()} for t in titles]
+            out = []
+            for m in re.finditer(
+                    r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.S):
+                href, title_html = m.group(1), m.group(2)
+                title = re.sub(r"<[^>]+>", "", title_html).strip()
+                title = _unescape_html(title)
+                if not title or _is_junk_title(title):
+                    continue
+                out.append({"title": title, "text": "", "url": _decode_ddg_url(href),
+                            "source": "news-aggregate", "ts": time.time()})
+            return out[:8]
         except Exception as exc:  # noqa: BLE001
             logger.warning("[news] ddg(%s) failed: %s", query, exc)
             return []
@@ -352,6 +458,34 @@ def _contains_word(needle: str, haystack: str) -> bool:
     import re
 
     return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
+
+
+def _is_junk_title(title: str) -> bool:
+    """True when a DDG result is an aggregator dashboard, not a news article."""
+    low = title.lower()
+    return any(tok in low for tok in _JUNK_TITLE_TOKENS)
+
+
+def _decode_ddg_url(href: str) -> str:
+    """DDG wraps real URLs as //duckduckgo.com/l/?uddg=<urlencoded>."""
+    import urllib.parse
+
+    if "uddg=" not in href:
+        return href
+    try:
+        for key, val in urllib.parse.parse_qsl(urllib.parse.urlparse(href).query):
+            if key == "uddg":
+                return val
+    except ValueError:
+        pass
+    return href
+
+
+def _unescape_html(text: str) -> str:
+    """Decode HTML entities in scraped titles (&#x27; &amp; etc.)."""
+    import html
+
+    return html.unescape(text)
 
 
 def _haversine_km(lat1, lng1, lat2, lng2) -> float:

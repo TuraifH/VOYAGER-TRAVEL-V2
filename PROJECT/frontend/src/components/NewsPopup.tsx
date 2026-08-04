@@ -33,6 +33,11 @@ export default function NewsPopup() {
         <span className="row">
           <span className="pulse-dot" /> <b>LIVE</b>
           <span className="muted small">News</span>
+          {news.some((n) => n.stale) && (
+            <span className="badge warn" title="NewsAPI quota exhausted — showing last-known headlines">
+              cached
+            </span>
+          )}
         </span>
         <button className="close" onClick={(e) => { e.stopPropagation(); setDismissed(true); }}>×</button>
       </div>
@@ -43,9 +48,17 @@ export default function NewsPopup() {
             <div key={i} className="news-item" style={{ borderLeftColor: CAT_COLOR[n.category ?? "general"] ?? "#95a5a6" }}>
               <b className="small">{n.title}</b>
               {n.summary && <div className="muted small">{n.summary}</div>}
-              <span className="badge" style={{ background: "transparent", color: CAT_COLOR[n.category ?? "general"] }}>
-                {n.category ?? "general"}
-              </span>
+              <div className="row">
+                <span className="badge" style={{ background: "transparent", color: CAT_COLOR[n.category ?? "general"] }}>
+                  {n.category ?? "general"}
+                </span>
+                {n.url && (
+                  <a className="muted small news-link" href={n.url} target="_blank" rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()} title={n.url}>
+                    read ↗
+                  </a>
+                )}
+              </div>
             </div>
           ))}
         </div>

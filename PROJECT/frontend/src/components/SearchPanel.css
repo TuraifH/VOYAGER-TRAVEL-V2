@@ -1,4 +1,4 @@
-.search-panel { display: flex; flex-direction: column; gap: 12px; }
+.search-panel { display: flex; flex-direction: column; gap: 18px; }
 
 /* ============================================================ segmented tabs */
 .seg {
@@ -12,9 +12,9 @@
 .seg-btn {
   position: relative;
   flex: 1;
-  padding: 8px 12px;
+  padding: 11px 14px;
   border-radius: 9px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-2);
   transition: color 0.18s ease;
@@ -38,15 +38,14 @@
   border-radius: 10px;
   transition: box-shadow 0.2s ease;
 }
-.specific .search-box .btn { width: 44px; justify-content: center; align-items: center; display: flex; }
-.specific .search-box .btn .material-symbols-outlined { font-size: 20px; }
+.search-panel input.text-input { padding: 14px 14px; font-size: 15px; }
+.specific .search-box .btn { width: 50px; justify-content: center; align-items: center; display: flex; }
+.specific .search-box .btn .material-symbols-outlined { font-size: 22px; }
 
 /* ============================================================ suggestions */
 .suggest {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
+  position: relative;
+  margin-top: 8px;
   z-index: 30;
   padding: 6px;
   display: flex;
@@ -62,7 +61,7 @@
   padding: 9px 10px;
   border-radius: 9px;
   color: var(--text);
-  font-size: 14px;
+  font-size: 15px;
 }
 .suggest-item .material-symbols-outlined { font-size: 18px; color: var(--primary); margin-top: 1px; }
 .suggest-item:hover { background: rgba(120, 130, 160, 0.12); }
@@ -75,7 +74,7 @@
 }
 
 /* ============================================================ nearby tab */
-.nearby { display: flex; flex-direction: column; gap: 12px; }
+.nearby { display: flex; flex-direction: column; gap: 16px; }
 .pinned-banner {
   display: flex;
   align-items: center;
@@ -99,6 +98,8 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 7px 13px;
+  font-size: 13.5px;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
   transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.18s ease, border-color 0.18s, background 0.18s;
 }
@@ -160,8 +161,8 @@
 .radius-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--primary);
   border: 3px solid #fff;
@@ -170,8 +171,8 @@
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 .radius-range::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   background: var(--primary);
   border: 3px solid #fff;
@@ -200,8 +201,8 @@
 }
 
 /* ============================================================ CTA */
-.cta { margin-top: 2px; }
-.cta .material-symbols-outlined { font-size: 18px; }
+.cta { margin-top: 2px; padding: 13px 14px; font-size: 15px; }
+.cta .material-symbols-outlined { font-size: 20px; }
 
 /* idle attention pulse: subtle breathing glow until first interaction */
 .cta-idle { animation: cta-idle-pulse 2.4s ease-in-out infinite; }

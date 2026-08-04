@@ -1,0 +1,146 @@
+/* AskAssistant — live-data chat card (POST /api/langgraph/ask) */
+.ask-card {
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.ask-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ask-logo {
+  color: var(--primary);
+  font-size: 20px;
+}
+
+.ask-chips {
+  margin-bottom: 10px;
+  gap: 6px;
+}
+
+.ask-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.ask-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 92%;
+}
+
+.ask-msg.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.ask-msg.assistant {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+.ask-bubble {
+  padding: 9px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.ask-msg.user .ask-bubble {
+  background: var(--primary);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.ask-msg.assistant .ask-bubble {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-bottom-left-radius: 4px;
+}
+
+.ask-factors {
+  gap: 6px;
+}
+
+.ask-factor {
+  background: rgba(108, 92, 231, 0.1);
+  border: 1px solid rgba(108, 92, 231, 0.25);
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.ask-live {
+  width: 100%;
+  margin-top: 2px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 10px;
+}
+
+.ask-live summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.ask-live summary .material-symbols-outlined {
+  font-size: 15px;
+  color: var(--secondary);
+}
+
+.ask-live-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ask-live-row .material-symbols-outlined {
+  font-size: 14px;
+  color: var(--text-3);
+}
+
+.ask-live-val {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-news {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.ask-input-row {
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.ask-input-row .text-input {
+  flex: 1;
+}
+
+.ask-input-row .btn {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 12px;
+}

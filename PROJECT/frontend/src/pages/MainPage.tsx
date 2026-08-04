@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import { useApp, type Mode } from "../context/AppContext";
 import HeaderBar from "../components/HeaderBar";
 import MapView from "../components/MapView";
@@ -16,11 +17,17 @@ const TABS: { key: Mode; label: string; icon: string }[] = [
   { key: "trip", label: "Trip", icon: "luggage" },
 ];
 
+const EASE = [0.22, 1, 0.36, 1] as const;
+
 export default function MainPage() {
-  const { mode, setMode, clearTransient, setUserLoc, flowOpen, setFlowOpen, flowParams } = useApp();
+  const { mode, setMode, clearTransient, setUserLoc, flowOpen, setFlowOpen, flowParams,
+    searched, searching, searchResults } = useApp();
 
   const [flowH, setFlowH] = useState(38); // % of map-wrap height
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  // Search/Nearby results window only exists once a search was actually run
+  // (or is running) — no placeholder box floating on the idle view.
+  const searchHasContent = searching || searched || searchResults.length > 0;
 
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -61,18 +68,28 @@ export default function MainPage() {
     <div className="app-shell">
       <HeaderBar />
       <div className="app-body">
-        <aside className="input-window glass-strong">
+        <motion.aside
+          className="input-window glass-strong"
+          layout
+          transition={{ duration: 0.35, ease: EASE }}
+        >
           {mode === "search" && <SearchInput />}
           {mode === "atob" && <AToBInput />}
           {mode === "trip" && <TripInput />}
-        </aside>
+        </motion.aside>
 
-        <aside className="results-window glass-strong">
-          {mode === "search" && <SearchResults />}
-          {mode === "atob" && <AtoBResults />}
-          {mode === "atob" && <QuickSuggestionResults />}
-          {mode === "trip" && <TripResults />}
-        </aside>
+        {!(mode === "search" && !searchHasContent) && (
+          <motion.aside
+            className="results-window glass-strong"
+            layout
+            transition={{ duration: 0.35, ease: EASE }}
+          >
+            {mode === "search" && <SearchResults />}
+            {mode === "atob" && <AtoBResults />}
+            {mode === "atob" && <QuickSuggestionResults />}
+            {mode === "trip" && <TripResults />}
+          </motion.aside>
+        )}
 
         <main className="map-wrap">
           <MapView />

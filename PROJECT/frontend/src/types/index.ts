@@ -39,6 +39,7 @@ export interface NewsItem {
   geo?: { name?: string; lat: number; lng: number } | null;
   summary?: string;
   ts?: number;
+  stale?: boolean;
 }
 
 // ============================================================ places
