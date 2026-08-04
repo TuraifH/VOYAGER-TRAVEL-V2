@@ -28,6 +28,17 @@ QA: `python -m pytest tests/ -q` (104 pass) · `cd frontend; npx tsc --noEmit` (
   components: HeaderBar, MapView, SearchPanel, AToBPanel, SegmentFlowView, DiscoveryPanel,
   TripPanel, NewsPopup.
 
+## Routing — two paths, never confused
+- **Multi-hop transit ("Find Routes")** → `POST /api/routes/segments` →
+  `SegmentBuilder.build_segments`/`build_segment_next` in `segment_builder.py`. This is the
+  **interactive hop-by-hop tree** (`HopTreeView.tsx`): you pick one stop at a time from branch options.
+- **Quick suggestion ("Quick suggestion" button, A→B transit tab)** → `POST /api/routes/quick-suggestion`
+  → `RouteFinder.find_routes_by_coords` in `route_finder.py` (A\* best-first, transfer-penalized).
+  Returns ONE auto-computed best route as a flat leg list, clearly labeled "AUTO-COMPUTED" and
+  explicitly separate from the interactive tree. Wired up intentionally (not dead code) — do not remove.
+- `segment_builder.py` imports `TransitAstarGraph` (graph) but NOT `route_finder`; the two engines
+  are independent. Nothing routes one into the other.
+
 ## Data sources (ALL REAL — never fabricate)
 - Transit: BMTC GTFS (pickle `DATA_FOLDER/processed/gtfs_cache.pkl`), metro Purple+Green only
   (NO Yelahanka/Blue), Karnataka rail. Fares from `transit_fares.json` + Karnataka govt ride rates.
@@ -49,4 +60,8 @@ Next: enable Google billing (for real ratings/photos) → PROMPT_8.
 ## Known-current
 - Search returns real OSM places (no ratings/photos until Google billing re-enabled). CORS fixed.
 - HeaderBar + AToB have current-location buttons. Search suggestions appear after 2+ chars (300ms).
+- Map draws ONLY confirmed-hops polylines (no faint all-options spider-web); fitBounds spans the
+  confirmed path, not the full segment-option set.
+- Always hard-refresh (Ctrl+Shift+R) before debugging a visual/behavioral bug — stale Vite bundles
+  have caused false "regressions" (a pre-rewrite build that dumped a 22-leg route).
 - Every commit touches only `PROJECT/` + this doc.

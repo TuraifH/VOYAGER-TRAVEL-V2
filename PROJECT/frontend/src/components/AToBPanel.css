@@ -35,3 +35,6 @@
 .ride-card .price { font-size: 18px; font-weight: 800; }
 
 .fuel-card { padding: 12px; border-left: 3px solid var(--warn); }
+
+.quick-legs { display: flex; flex-direction: column; gap: 6px; }
+.quick-leg { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 8px; background: rgba(120, 130, 160, 0.06); }

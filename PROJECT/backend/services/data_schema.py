@@ -195,3 +195,64 @@ class Suggestion(BaseModel):
     place_id: str | None = None
     lat: float | None = None
     lng: float | None = None
+
+
+# ============================================================ TRIP PLANNER (PROMPT_8)
+# Shapes for the destination discovery + ranking engine (Phase 2 of the Trip
+# Planner build). Static seed data is FLAGGED approximate; nothing is fabricated
+# by this module — all values below come from curated source data or explicit
+# "estimated"/"unknown" markers (golden rule #1).
+
+TimeSlot = Literal[
+    "early_morning", "morning", "afternoon", "evening", "night"
+]
+CrowdLevel = Literal["low", "medium", "high", "unknown"]
+
+GroupType = Literal[
+    "solo", "couple", "friends", "family_kids", "family", "senior"
+]
+GROUP_TYPES: tuple[str, ...] = GroupType.__args__  # allowed group-type values
+
+# Interest tags from the trip planner Step-5 picker (interest categories).
+INTEREST_TAGS: tuple[str, ...] = (
+    "nature", "heritage", "food", "adventure", "shopping", "nightlife",
+    "wellness", "offbeat", "religious", "museum", "photo",
+)
+
+
+class TripPlace(BaseModel):
+    """A candidate place in the Trip Planner's destination pool (2.1).
+
+    `data_source` marks where the entry came from; static-curated entries are
+    flagged `static` and the module treats fee/duration/rating/crowd as
+    ESTIMATED (surfaced to the user as "approximate — verify before your trip").
+    """
+    id: str
+    name: str
+    category: str  # primary category, e.g. nature / heritage / food / ...
+    description: str
+    duration_min: int  # average visit duration
+    entry_fee: float  # INR per person (0 = free)
+    rating: float  # out of 5 (estimated/typical)
+    review_count: int  # rough count, for confidence weighting
+    best_times: list[TimeSlot] = Field(default_factory=list)  # valid windows
+    crowd: dict[TimeSlot, CrowdLevel] = Field(default_factory=dict)
+    opening_hours: str = ""
+    weekly_closures: list[str] = Field(default_factory=list)
+    lat: float
+    lng: float
+    tags: list[str] = Field(default_factory=list)  # subset of INTEREST_TAGS
+    family_friendly: bool = True
+    physically_demanding: bool = False
+    accessibility_notes: str = ""
+    destination: str = ""
+    data_source: str = "static"  # static | live | llm (llm => approximate)
+    data_is_estimated: bool = True  # fees/timings/ratings approximate unless live
+
+
+class RankedPlace(TripPlace):
+    """A TripPlace plus its computed relevance score + reasoning (2.3)."""
+    score: float = 0.0
+    components: dict[str, float] = Field(default_factory=dict)  # sub-scores 0..1
+    why: str = ""  # short "why recommended" line
+    rank: int = 0

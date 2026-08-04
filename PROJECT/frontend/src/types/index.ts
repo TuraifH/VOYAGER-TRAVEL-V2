@@ -104,6 +104,14 @@ export interface StopRef {
   lng: number;
 }
 
+export interface AccessWalk {
+  stopName: string;
+  lat: number;
+  lng: number;
+  durationMin: number;
+  distanceKm: number;
+}
+
 export interface HopOption {
   optionId: string;
   mode: "walk" | "bus" | "metro" | "train" | "ride" | string;
@@ -126,6 +134,7 @@ export interface HopOption {
   connectedFrom?: string | null;
   probeNext?: ProbeOption[];
   exceedsBudget?: boolean;
+  accessWalk?: AccessWalk;
 }
 
 export interface ProbeOption {
@@ -189,4 +198,125 @@ export interface ScoredRoute {
   rank: number;
   best_match: boolean;
   explanation?: string | null;
+}
+
+// ============================================================ quick suggestion (one-shot A*)
+export interface QuickLeg {
+  mode: string;
+  route_number?: string | null;
+  from_stop: string;
+  to_stop: string;
+  from_lat: number;
+  from_lng: number;
+  to_lat: number;
+  to_lng: number;
+  line?: string | null;
+  depart_time?: string | null;
+  arrive_time?: string | null;
+  duration_min: number;
+  distance_m: number;
+  fare: number;
+  per_person_fare: number;
+  geometry: number[][];
+  geometry_source: string;
+  status: string;
+  alternate_routes: string[];
+}
+
+export interface QuickPlan {
+  legs: QuickLeg[];
+  total_fare: number;
+  total_duration_min: number;
+  total_walk_km: number;
+  transfers: number;
+  per_person_fare: number;
+  summary: string;
+}
+
+export interface QuickSuggestionResponse {
+  plans: QuickPlan[];
+}
+
+// ============================================================ trip planner
+export type GroupType = "solo" | "couple" | "friends" | "family" | "seniors";
+export type Pace = "relaxed" | "balanced" | "packed";
+export type BudgetShape = "total" | "perPerson";
+
+export interface TripPlacePick {
+  name: string;
+  lat: number;
+  lng: number;
+}
+
+export interface BudgetSplits {
+  stay: number;
+  food: number;
+  transport: number;
+  attractions: number;
+  misc: number;
+}
+
+export interface TripInputData {
+  destination: TripPlacePick | null;
+  suggestDestination: boolean;
+  durationMode: "dates" | "days";
+  startDate: string | null;
+  endDate: string | null;
+  days: number;
+  groupSize: number;
+  groupType: GroupType;
+  hasKids: boolean;
+  budget: number;
+  budgetShape: BudgetShape;
+  budgetSplits: BudgetSplits;
+  interests: string[];
+  pace: Pace;
+}
+
+// ============================================================ trip plan (generated itinerary)
+export interface TripPlanPlace {
+  id: string;
+  name: string;
+  category: string;
+  description: string;
+  duration_min: number;
+  entry_fee: number;
+  rating: number;
+  review_count: number;
+  best_times: string[];
+  crowd: Record<string, string>;
+  opening_hours: string;
+  weekly_closures: string[];
+  lat: number;
+  lng: number;
+  tags: string[];
+  family_friendly: boolean;
+  physically_demanding: boolean;
+  accessibility_notes: string;
+  destination: string;
+  data_source: string;
+  data_is_estimated: boolean;
+  score: number;
+  components: Record<string, number>;
+  why: string;
+  rank: number;
+}
+
+export interface TripPlanDay {
+  day: number;
+  place_count: number;
+  total_activity_min: number;
+  places: TripPlanPlace[];
+}
+
+export interface TripPlan {
+  destination: string;
+  group_type: string;
+  interests: string[];
+  pace: string;
+  days: TripPlanDay[];
+  total_places: number;
+  disclaimer: string;
+  relaxed: boolean;
+  warning?: string;
 }

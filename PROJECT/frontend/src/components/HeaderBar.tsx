@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import "./HeaderBar.css";
 
+declare const __BUILD_ID__: string;
+
 function Clock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -46,6 +48,7 @@ export default function HeaderBar() {
       <div className="brand row">
         <span className="logo">VOYAGER</span>
         <span className="logo-sub">v2</span>
+        <span className="logo-sub build-id" title={`Build ${__BUILD_ID__}`}>{__BUILD_ID__}</span>
       </div>
       <div className="header-right row">
         <div className="weather row" title={weather?.condition ?? "Weather unavailable"}>

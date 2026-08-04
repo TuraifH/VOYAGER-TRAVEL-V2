@@ -12,7 +12,7 @@ a live/scheduled source exists (PROMPT_5) — never invented.
 import heapq
 import time
 
-from .fare_engine import bmtc_fare, metro_fare, kia_fare, ride_fare_range
+from .fare_engine import bmtc_fare, bus_route_class, metro_fare, kia_fare, ride_fare_range
 from .gtfs_service import GTFSService
 from .graphhopper_client import GraphHopperClient
 from .transit_models import Leg, RoutePlan
@@ -37,6 +37,7 @@ FORWARD_TOLERANCE_METRO_M = 2500  # metro lines curve between stations
 BUDGET_SENSITIVITY = 8.0  # ₹8 ≈ 1 min in the A* weight
 SEARCH_DEADLINE_S = 4.0
 BUFFER_MIN = 3.0  # min buffer after previous arrival before next departure
+METRO_HEADWAY_MIN = 5  # BMRCL avg headway for estimated metro waits (no GTFS metro schedule)
 MAX_WAIT_MIN = 45.0  # departures farther than this are flagged not_running
 WALK_ONLY_KM = 2.0
 CACHE_TTL_S = 600  # 10 min route-plan cache
@@ -342,8 +343,12 @@ class RouteFinder:
         if status == "scheduled" and (depart - int(round(t_min + BUFFER_MIN))) > MAX_WAIT_MIN:
             status = "not_running"  # next departure is hours away — not a live option
 
-        if route_id and route_id.upper().startswith("KIA"):
-            fare = kia_fare(route_id, dist_km).amount
+        if route_id:
+            route_class = bus_route_class(route_id)
+            if route_class == "kia":
+                fare = kia_fare(route_id, dist_km).amount
+            else:
+                fare = bmtc_fare(route_class, dist_km).amount
         else:
             fare = bmtc_fare("nonac", dist_km).amount
         pp = round(fare / max(1, group_size), 2)
@@ -376,7 +381,7 @@ class RouteFinder:
 
     def _metro_leg(self, fnode, tnode, edata, t_min, group_size, intermediates=()) -> Leg:
         line = edata.get("line") or "Purple Line"
-        depart = int(round(t_min + BUFFER_MIN))
+        depart = int(round(t_min + BUFFER_MIN + METRO_HEADWAY_MIN))
         duration = int(round(edata["time_min"]))
         arrive = depart + duration
         dist_km = edata["dist_m"] / 1000

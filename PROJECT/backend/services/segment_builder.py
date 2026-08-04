@@ -36,6 +36,11 @@ FORWARD_TOLERANCE_METRO_M = 2500
 BUFFER_MIN = 4.0          # catch-the-bus buffer after arrival (PROMPT_3 §3.2)
 MAX_WAIT_MIN = 45.0       # departures farther than this -> not_running
 DEP_WINDOW_MIN = 180      # departure scan window
+ARRIVED_DEST_M = 500      # within this of dest => journey complete (BUG1 #1)
+# BMRCL metro has no GTFS schedule in this dataset; BMRCL publishes a
+# ~4-8 min headway. Use a static average as the estimated platform wait
+# (still labelled "estimated"), instead of assuming zero wait (Fix 4).
+METRO_HEADWAY_MIN = 5
 # Bounds so the tree stays responsive (PROMPT_3 §5)
 MAX_WALK_OPTIONS = 5
 MAX_BOARD_BUS = 3
@@ -148,7 +153,11 @@ class SegmentBuilder:
             d = _hav(anchor["lat"], anchor["lng"], dest["lat"], dest["lng"])
         else:
             d = 1e9
-        if d <= 500.0:  # within ~500m of final destination
+        # BUG1 #1: hard termination — the last chosen stop either IS the destination
+        # (by name) or sits within the arrived threshold of its real coords. If the
+        # destination has been reached, do NOT build any further hops.
+        arrived = self._stop_is_destination(stop, stop_name, dest, d)
+        if arrived or d <= ARRIVED_DEST_M:
             timeline = [self._timeline_item(c) for c in chosen_legs]
             return {"journey": journey, "segments": [], "probes": [], "warnings": [],
                     "journeyComplete": True, "timeline": timeline,
@@ -255,6 +264,13 @@ class SegmentBuilder:
                                    budget, seg_num, connected_from,
                                    visited: set | None = None) -> dict:
         anchor_pt = {"name": anchor_name, "lat": anchor_lat, "lng": anchor_lng}
+        # BUG1 #1: if we are already effectively AT the destination, there are no
+        # onward hops — stop the journey here rather than looping past it.
+        anchor_hit = _hav(anchor_lat, anchor_lng, dest_lat, dest_lng) <= ARRIVED_DEST_M
+        if anchor_hit:
+            return {"segmentId": seg_num, "title": f"Segment {seg_num}: Onward connections",
+                    "sourceName": anchor_name, "arrivalAtSegmentStart": _fmt(now_min),
+                    "options": []}
         cand = self._candidate_stops(anchor_lat, anchor_lng, dest_lat, dest_lng)
         opts = []
         walk_shown = 0
@@ -380,6 +396,11 @@ class SegmentBuilder:
                                        group_size, budget, connected_from, seg_num):
                 opt["_walkToBoard"] = walk_to_board
                 opt["_fromLat"], opt["_fromLng"] = board_node.lat, board_node.lng
+                opt["accessWalk"] = {
+                    "stopName": board_node.name, "lat": board_node.lat, "lng": board_node.lng,
+                    "durationMin": walk_to_board,
+                    "distanceKm": round(board_dist / 1000.0, 2),
+                }
                 options.append(opt)
 
         metro_board = self.graph.metro_nodes_near(lat, lng, METRO_CAND_RADIUS_M)[:MAX_BOARD_METRO]
@@ -393,6 +414,11 @@ class SegmentBuilder:
                                           group_size, budget, connected_from, seg_num):
                 mopt["_walkToBoard"] = walk_to_board
                 mopt["_fromLat"], mopt["_fromLng"] = station_node.lat, station_node.lng
+                mopt["accessWalk"] = {
+                    "stopName": station_node.name, "lat": station_node.lat, "lng": station_node.lng,
+                    "durationMin": walk_to_board,
+                    "distanceKm": round(station_dist / 1000.0, 2),
+                }
                 options.append(mopt)
 
         # dedupe by (mode, route, destStop)
@@ -536,7 +562,7 @@ class SegmentBuilder:
                          group_size, budget, connected_from, seg_num,
                          not_running: bool = False) -> dict | None:
         """One bus ride: depart board_node on dep.route_number, get off at fwd stop."""
-        from .fare_engine import bmtc_fare, kia_fare
+        from .fare_engine import bmtc_fare, bus_route_class, kia_fare
 
         dest_stop, dlat, dlng = fwd[0], fwd[1], fwd[2]
         wait = dep.departure_minutes
@@ -546,11 +572,12 @@ class SegmentBuilder:
         arrive = wait + duration
         status = "not_running" if not_running else "scheduled"
 
-        # fare
-        if dep.route_number.upper().startswith("KIA"):
+        # fare (route class from the GTFS route short-name: KIA / AC Vajra / ordinary)
+        route_class = bus_route_class(dep.route_number)
+        if route_class == "kia":
             fare = kia_fare(dep.route_number, dist_m / 1000.0).amount or 0.0
         else:
-            fare = bmtc_fare("nonac", dist_m / 1000.0).amount or 0.0
+            fare = bmtc_fare(route_class, dist_m / 1000.0).amount or 0.0
         pp = fare
         total = pp * max(1, group_size)
         exceeds = total > budget and fare > 0
@@ -596,7 +623,7 @@ class SegmentBuilder:
                 dest_station, dlat, dlng = fwd[0], fwd[1], fwd[2]
                 duration, dist_m, path = self._metro_ride_duration(station_node.name,
                                                                    dest_station, line)
-                depart = board_after  # metro has no schedule -> estimated timing
+                depart = board_after + METRO_HEADWAY_MIN  # no schedule -> estimated avg wait
                 arrive = depart + duration
                 fare = metro_fare(dist_m / 1000.0,
                                   "purple" if "Purple" in line else "green").amount or 0.0
@@ -851,7 +878,7 @@ class SegmentBuilder:
 
     def _probe_from_stop(self, stop, destination, after_min, group_size, budget) -> dict | None:
         """A single cheapest/earliest onward transit suggestion from a stop."""
-        from .fare_engine import bmtc_fare, metro_fare
+        from .fare_engine import bmtc_fare, bus_route_class, metro_fare
 
         if stop.get("kind") == "metro" or self.graph.node(f"metro:{stop['name']}") is not None:
             node = self.graph.node(f"metro:{stop['name']}")
@@ -889,7 +916,8 @@ class SegmentBuilder:
                                           destination["lng"], f0[1], f0[2]):
                 continue
             dur, dist = self._route_ride_duration(node.name, f0[0], d.route_number)
-            fare = bmtc_fare("nonac", dist / 1000.0).amount
+            route_class = bus_route_class(d.route_number)
+            fare = bmtc_fare(route_class, dist / 1000.0).amount
             return {"destinationStop": {"name": f0[0], "lat": f0[1], "lng": f0[2]},
                     "mode": "bus", "routeNumber": d.route_number,
                     "departureTime": _fmt(d.departure_minutes),
@@ -933,6 +961,37 @@ class SegmentBuilder:
         s = leg.get("destinationStop") if isinstance(leg, dict) else None
         name = s.get("name") if isinstance(s, dict) else str(s or "")
         return name.strip().lower()
+
+    @staticmethod
+    def _name_norm(name) -> str:
+        """Weaken a place/stop name so 'mahatma gandhi road', 'mahatma gandhi r d',
+        'mahadma gandhi road metro station' etc. collapse for equality checks."""
+        import re as _re
+        s = _re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+        s = s.replace("metro station", " ", ).replace("metro", " ")
+        s = _re.sub(r"\bst(\.|r)?\b", " ", s).replace(" st ", " ").replace(" rd ", " ")
+        s = _re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _stop_is_destination(self, stop, stop_name, dest, d_hav: float) -> bool:
+        """True when a resolved stop is effectively the journey destination.
+
+        Absolute hard stop: name equality (normalized) OR real coords within
+        ARRIVED_DEST_M of the destination (BUG1 #1). Optional dict `stop` carries
+        the chosen leg's own coords; falls back to the name when unknown."""
+        dest_name = self._name_norm(dest.get("name", ""))
+        if stop_name and dest_name and stop_name.strip().lower() == dest_name:
+            return True
+        if d_hav is not None and d_hav <= ARRIVED_DEST_M:
+            return True
+        if isinstance(stop, dict):
+            lat, lng = stop.get("lat"), stop.get("lng")
+            if lat is not None and lng is not None and dest.get("lat") is not None:
+                if dest_name and self._name_norm(stop.get("name", "")) == dest_name:
+                    return True
+                if _hav(lat, lng, dest["lat"], dest["lng"]) <= ARRIVED_DEST_M:
+                    return True
+        return False
 
     @staticmethod
     def _parse_hhmm(value) -> int | None:

@@ -25,6 +25,12 @@
   border-radius: 6px;
   padding: 0 5px;
 }
+.brand .build-id {
+  color: var(--muted, #95a5a6);
+  border-color: rgba(120, 130, 160, 0.35);
+  font-weight: 500;
+  cursor: help;
+}
 
 .header-right .weather { gap: 4px; }
 .weather .temp { font-weight: 700; font-size: 15px; }
