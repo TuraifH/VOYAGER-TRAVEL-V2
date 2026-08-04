@@ -82,6 +82,8 @@
 31. Next Actions Master Plan — Docker (why), Google billing, live rides, PROMPT_8/9, QA loop
 32. The 2026-08-04 Session — Progressive Hop Builder FIX (no more looping) + bottom-sheet window + every API/option/segment/tool explained for the next session
 33. The News + Photo Fixes Session — news loop now started, photos now render (byte-proxy, no key leak) — every API/feature/segment/tool re-inventoried + what-next (Docker, integrations WHY, plans, data handling)
+34. IMPLEMENTATION_PLAN execution — news window fix, stop-selection preference, window split, radius circle, horizontal hop decision tree (2026-08-04B)
+35. The Frontend Motion + Glass Session — Search/Nearby panel polish (framer-motion), marker clustering, hover sync, glassmorphism windows (2026-08-04C)
 
 ---
 
@@ -294,8 +296,9 @@ VOYAGER_2/                                         ← NEW clean repo root (C:\U
     ├── test_data_layer.py        # 12 tests
     ├── test_route_finder.py      # 10 tests
     ├── test_segment_builder.py   # 14 tests
-    ├── test_prompt4.py           # 28 tests
-    └── test_prompt5.py           # 20 tests
+    ├── test_prompt4.py           # 33 tests
+    ├── test_prompt5.py           # 20 tests
+    └── test_no_fake_data.py      # 7 tests
     (104 tests total, all green — current count)
 ```
 
@@ -321,7 +324,7 @@ VOYAGER_2/                                         ← NEW clean repo root (C:\U
   `test_segment_builder.py` (14), `test_prompt4.py` (33), `test_prompt5.py` (20),
   `test_traffic_model.py` (9), `test_no_fake_data.py` (6).
 - Frontend: `npx tsc --noEmit` zero errors; dev server :3000; axios talks to `http://localhost:8000/api`
-  directly + **CORS middleware** added in `backend/main.py` (see §20 #24).
+  directly + **CORS middleware** added in `backend/main.py` (see §20 #23).
 - Prompt 7 (ML + integration + fake-data audit) **DONE**: traffic model + `traffic-model-info` endpoint
   + benchmark all within budget. Prompts 8–9 fully *specified* (see §24) — build order is 8 → 9.
 - **2026-08-03 hardening session (merged, uncommitted working tree at last check):** map fly-away
@@ -380,9 +383,9 @@ build printed at init).
 - **Weather**: `GET /api/search/weather` → `weather_client.current`.
 - **Trains**: `GET /api/routes/live-trains` → `train_service.trains_between` (live or flagged
   fallback).
-- **Photo**: `GET /api/search/photo?name=…` → 307 redirect to real Google photo URL (key stays
-  server-side). SerpAPI thumbnails (photo_name beginning `http`) are rendered directly by the
-  frontend (see §20 #36).
+- **Photo**: `GET /api/search/photo?name=…` → server-side **byte proxy** (image bytes streamed back;
+  API key never leaves the server, no 307). SerpAPI thumbnails (photo_name beginning `http`) are
+  rendered directly by the frontend (see §20 #36).
 
 ---
 
@@ -598,11 +601,11 @@ Destination`.
   Bangalore center `(12.9716, 77.5946)` (`BANGALORE_RADIUS_KM = 15.0`), dedup by 4-decimal coords
   (`_DEDUP_RND = 4`, ~11m). 24h cache, 2000-entry bound.
 - Methods: `geocode`, `search_places` (searchText + locationBias circle 15km), `nearby_places`
-  (searchNearby, maxResultCount 20, `includedPrimaryTypes` from 19-category map), `place_details`,
+  (searchNearby, maxResultCount 20, `includedPrimaryTypes` from 19-category map),
   `directions` (mode driving/walking/transit, `departure_time=now`, `traffic_model=best_guess`,
   returns `distance_m`, `duration_s`, `duration_in_traffic_s`, `traffic_ratio`, decoded `geometry`,
-  `source:"google_maps"`), `place_photo_url(place_id, photo_name, max_width)` → real URL
-  `https://places.googleapis.com/v1/{photo_name}/media?maxWidthPx={max_width}&key=…`.
+  `source:"google_maps"`), `fetch_photo(photo_name, max_width)` → image bytes served through the
+  `/api/search/photo` byte proxy (key never leaves the server).
 - 19 category → primary-types map: atm, bank, hospital, pharmacy, restaurant, cafe, hotel/mall
   (hotel+lodging), mall (shopping_mall), petrol pump (gas_station), ev station, supermarket,
   park, bus stop, metro (subway_station/metro_station/transit_station), temple, police, school,
@@ -795,9 +798,15 @@ Covered fully in §16.
 `Mode = "search" | "atob" | "trip"`. `JourneyState{segments, chosenLegs, active, position}`.
 `AppState`: mode/setMode, dark/toggleDark (initial `prefers-color-scheme`, toggles `html.dark`),
 userLoc, source, dest, setSource/setDest, swap, weather, places, selected, showDiscovery, prices,
-liveContext, news, journey (setJourney merges partials), flyTo. `scoreClass(score)`: null→yellow,
-≥70 green, ≥50 yellow, ≥30 orange, else red. `scoreColor(score)` → CSS var. `useApp()` throws
-outside provider.
+news, journey (setJourney merges partials), flyTo. `scoreClass(score)`: null→yellow,
+≥70 green, ≥50 yellow, ≥30 orange, else red. `useApp()` throws outside provider.
+**2026-08-04 (motion polish) additions:** `searchResults/setSearchResults` (results window),
+`hoveredPlaceId/setHoveredPlaceId` (card↔pin hover sync), `pinned/setPinned` (nearby base place),
+`searching/setSearching` + `searched/setSearched` (skeleton-in-place vs empty state),
+`radiusKm/setRadiusKm` (lifted from the slider so the results-window "widen radius" button can
+bump it), `nearbyBase/setNearbyBase` (`{lat,lng,radiusM}` — live radius circle), plus
+`clearTransient()` (resets places/searchResults/pinned/selected/showDiscovery/prices/fuel/
+nearbyBase/ridePath/flyTo/flowOpen/journey — never source/dest/userLoc/mode).
 
 ### 14.2 `services/api.ts` — typed axios client
 `http` instance: `baseURL = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api"`,
@@ -806,14 +815,13 @@ Methods (exact paths):
 - `searchPlaces(q, lat?, lng?, signal?)` → GET `/search/places`
 - `searchNearby(lat, lng, radiusM, categories=[], keyword="", signal?)` → GET `/search/nearby`
 - `enrichPlace(place)` → POST `/search/enrich`
-- `verifyPlace(name, lat, lng)` → POST `/search/verify`
 - `weather(lat, lng)` → GET `/search/weather` (null if condition "unavailable")
 - `news(lat?, lng?, keyword="", limit=15)` → GET `/search/news`
 - `ridePrices(origin, dest, groupSize)` → POST `/rides/prices`
 - `routeSegments(src, dst, groupSize, budget, currentTime=null, signal?)` → POST `/routes/segments`
 - `segmentNext(journey, chosenLegs, groupSize, budget)` → POST `/routes/segment-next`
-- `routeContext(src, dst, groupSize, budget, place=null)` → POST `/langgraph/route-context`
-- `liveTrains(from, to)` → GET `/routes/live-trains`
+- `driveRoute(origin, dest)` → POST `/routes/drive` (GraphHopper car geometry; used by AToB drive + ride-card path)
+
 
 ### 14.3 `types/index.ts` — all contracts
 `Coord=[number,number]`, `ScoreClass`, `LatLng`, `WeatherNow`, `NewsItem`, `PlaceResult`,
@@ -828,9 +836,15 @@ stores via setWeather. `main.tsx` mounts StrictMode + App with `index.css`.
 
 ### 14.5 `pages/MainPage.tsx` + `.css` — 3-tab shell
 Tabs: Search / A→B / Trip (bottom pill nav, active = primary bg + glow). Layout: HeaderBar on top;
-`.app-body` = sidebar (`380px`, `.glass`) + map-wrap (flex:1) + DiscoveryPanel overlay. Geolocation
-on mount (6s timeout, fallback Bengaluru). Mobile ≤768px: body becomes column, sidebar 42vh, map
-45vh, icon-only tabs. Exports helper `flyToPoint(map, point, zoom=15)`.
+`.app-body` = two **floating glass windows** over the map: `.input-window` (top-left, 360px,
+`z-index:900`) + `.results-window` (below it, `z-index:900`) — both `clearTransient()` on bottom-tab
+switch. Geolocation on mount (6s timeout, fallback Bengaluru). Mobile ≤768px: windows full-width,
+input 30% max-height, results below, icon-only tabs.
+**Glassmorphism (2026-08-04):** windows are translucent — dark `rgba(15,20,35,0.72)` / light
+`rgba(255,255,255,0.68)`, `backdrop-filter: blur(20px) saturate(1.4)` + `-webkit-` prefix, top-edge
+light highlight `inset 0 1px 0 rgba(255,255,255,0.08)`, outer `var(--shadow)`, thin scrollbars;
+`@supports not (backdrop-filter…)` fallback = 0.94-opacity fill. Static blur only (never animated).
+Blur is real because `.map-wrap` (`z-index:0`) is behind the windows (`z-index:900`).
 
 ### 14.6 `components/HeaderBar.tsx` + `.css`
 Brand, live clock, weather chip (temp + condition, `rain soon` badge when rain_next_hour), dark
@@ -856,6 +870,19 @@ toggle, location.
 - `Pins` — numbered places hidden during active journey; source = green pin, dest = red pin, star
   for selected; numbered pins colored by `business_status==="CLOSED_PERMANENTLY" ? red :
   scoreClass(rating*20)`; news pins only if `geo`; JourneyPosition = blue CircleMarker (radius 7).
+- **Nearby pins drop-in + hover sync (2026-08-04):** numbered pins are wrapped in
+  `<div class="pin-wrap" style="animation-delay: min(i*60,540)ms">` for a staggered drop
+  (`pin-drop` keyframes: -18px + scale 0.4 → overshoot → settle, `cubic-bezier(0.22,1,0.36,1)`).
+  Hover sync card↔pin uses a `pinEls` ref Map (place_id → `marker.getElement()`); an effect on
+  `hoveredPlaceId` toggles `.hot` (scale 1.3 + glow ring) on `.marker-num` — **direct DOM classList,
+  never `setIcon`** (setIcon would recreate the element and replay the drop animation). Marker
+  `mouseover/mouseout` → `setHoveredPlaceId(p.place_id)`.
+- **Clustering (2026-08-04):** numbered pins render inside `MarkerClusterGroup` (react-leaflet-cluster
+  4.x; deps: @react-leaflet/core ^3, react-leaflet ^5, React 19 — v4 is the rl5-compatible line).
+  Props: `chunkedLoading, maxClusterRadius:48, showCoverageOnHover:false,
+  spiderfyDistanceMultiplier:1.6` + `iconCreateFunction={clusterIcon}` → custom divIcon bubble:
+  count <10 purple, <50 deep purple, ≥50 teal (`.marker-cluster-*` overrides in `index.css`,
+  dark-theme styled, hover scale 1.15). Imports both MarkerCluster.css + MarkerCluster.Default.css.
 - `fitBounds` on journey segments + ridePath (padding 40), and every point is filtered through the
   Bengaluru-box guard so a single bad point cannot zoom the map out to "nowhere".
 - OSM tiles. Hover = CSS only. Hop-card hover/select pans the map (in SegmentFlowView, correct
@@ -869,6 +896,33 @@ place is pinned, 19 category chips in scrollable wrap — default "Restaurant", 
 name, primary_type, status pill (open/closed/unknown), address, ★ rating (count), distance km,
 `badge live/est` for open/closed, **Details** + **Navigate** buttons. Click → pin + flyTo; Details
 → enrich + DiscoveryPanel; Navigate → setDest + mode atob.
+
+**2026-08-04 motion/motion-state rewrite (all framer-motion, easing `cubic-bezier(0.22,1,0.36,1)`):**
+- **Segmented tabs:** active pill = `motion.span layoutId="seg-pill"` (spring 420/34) so the bg
+  slides between tabs; views swap via `AnimatePresence mode="wait"` cross-fade + 8px slide +
+  scale depth (0.98 both ways). Whole panel wrapped in `MotionConfig reducedMotion="user"`.
+- **Chips (19):** multi-select `Set<string>`; per-chip Material icon (`CATEGORY_ICONS` map) +
+  animated ✓ checkmark; spring pop keyframes `[0.9, 1.08, 1]`; **ripple burst at the tap point**
+  (`spawnRipple(el, clientX, clientY)` — absolute `<span class="chip-ripple">`, 300ms, removed);
+  hover lift 2px + press 0.95; first-mount stagger 50ms × i (`chipsAnimatedRef` — once only).
+  Count line below ("3 selected" / "Pick at least one category").
+- **Radius slider (context-lifted `radiusKm`):** snap ticks at 0.5/1/2/5/10; thumb scales while
+  dragging + floating tooltip pill ("2 km"); filled track = primary gradient; **rAF-throttled
+  `setNearbyBase`** (`rafRef`) so the map `<Circle>` grows/shrinks live during drag.
+- **CTA:** click → inline spinner "Finding…" → checkmark "Found" (1.5s) → idle; press scale 0.97;
+  hover glow; **idle pulse** after 8s on the Nearby tab (`idlePulse`, once per session —
+  `interactedRef` stops it forever after first click).
+- **Search icon morph:** search → spinner (in flight) → "X" (text present), `AnimatePresence
+  mode="wait"` per glyph. Suggestions rows stagger 35ms × i, ArrowUp/Down + Enter + Escape with
+  `aria-activedescendant`, matching substring in `<mark>`.
+- **Results window (shared context):** while `searching` → 3 shimmer skeleton cards in place
+  (`aria-busy`); zero results + `searched` → empty state (`search_off` icon, "No places found at
+  X km.", **"Widen search radius"** → `setRadiusKm(+3 capped)` + `CustomEvent("voyager:rerun-nearby")`
+  that `SearchInput` listens for (switches to Nearby tab if needed, then re-runs via
+  `runNearbyRef`). `PlaceCard`: staggered entrance 60ms × i; **rating CountUp** (`animate(0, v,
+  {duration:0.4, delay})`); teal `badge.info` distance (near_me icon) slides in after the card;
+  open/closed = `badge.info`/`badge.warn`. Card `onHoverStart/End` + `onFocus/Blur` set
+  `hoveredPlaceId` (pin sync, §14.7).
 
 ### 14.9 `components/DiscoveryPanel.tsx` + `.css` — right-side glass panel
 Shows (when showDiscovery): hero photo (`/api/photo?name=…`, onError hides), header + close,
@@ -945,11 +999,11 @@ colors (green/yellow/orange/red), glass blur 18px, radius 16px, font Inter 15px.
 Dark mode via `html.dark` overrides. Body = two radial gradients (purple top-right, teal
 bottom-left).
 Classes: `.glass`, `.glass-strong`, `.hover-lift`, `.score-pill .green/.yellow/.orange/.red`,
-`.score-bar`, `.badge .live/.est/.approx/.best/.gold`, `.skeleton` (shimmer), `.spinner`,
+`.badge .live/.est`, `.skeleton` (shimmer), `.spinner`,
 `.pulse-dot`, animations `.anim-up/.anim-in/.anim-scale`, keyframes `shimmer/slide-up/fade-in/
 scale-in/pulse-ring/pulse-dot/spin`, Leaflet overrides, `.marker-pin` (rotated teardrop, green
 glow/yellow 30px/red 24px dim), `.marker-num`, `.marker-user` (pulse ring), `.marker-star`, utils
-(muted/truncate/row/spread/mt8/mt12), `.btn` (+ghost/full/small), `.text-input`, `.chip`,
+(muted/truncate/row/gap/spread/mt8/mt12), `.btn` (+ghost/full/small), `.text-input`, `.chip`,
 `.full-map`.
 
 ### 14.15 `vite.config.ts`
@@ -1006,8 +1060,8 @@ changeOrigin.
   `duration_in_traffic` for the TOPSIS traffic factor and real driving geometry via Directions.
 - Auth: `GOOGLE_MAPS_API_KEY` (API-key, **no proxy**). APIs enabled: Places API (New), Geocoding,
   Directions/Distance Matrix.
-- Where used: `clients/google_maps_client.py` (search_places, nearby_places, place_details,
-  place_photo_url, directions, geocode). 24h cache. Photo served through the **server-side proxy**
+- Where used: `clients/google_maps_client.py` (search_places, nearby_places, fetch_photo,
+  directions, geocode). 24h cache. Photo served through the **server-side byte proxy**
   (`GET /api/search/photo`) so the API key never leaks to the browser.
 
 ### 15.3 GraphHopper — real road routing (WHY: replaces v1's OSRM)
@@ -1143,6 +1197,14 @@ until PROMPT_8). Frontend: `VITE_API_BASE` (default `http://localhost:8000/api`)
 
 Git log (main, newest first) tells the v2 story (all commits staged from `PROJECT/`):
 
+- `ddcf7cf` — **Frontend motion + glass polish**: framer-motion, marker clustering, hover sync,
+  glassmorphism windows (PROMPT_6).
+- `eadaed7` — **News engine at startup + photo byte proxy** (`/api/photo`), no-proxy direct-fetch
+  fallback for news.
+- `a7222da` — **2026-08-04**: hop-builder looping fix (spaced arrival stops + visited set +
+  progress-aware top), hop window as bottom sheet.
+- `f2a8000` — **2026-08-03 hardening**: map fly-away fix, progressive hop builder, SerpAPI rating
+  fallback, OSM→Google resolve, LLM provider chain, `/routes/drive`.
 - `401f33a` — **Search/CORS/location-buttons + PBF committed**: Google Places 403 → OpenStreetMap
   Nominatim fallback (search/nearby/geocode), CORSMiddleware in `main.py`, current-location buttons
   (HeaderBar + AToB source/dest), invalid Google field-mask fix, `bangalore.osm.pbf` committed so
@@ -1381,7 +1443,9 @@ that precision). Full suite back to **104 passed**.
     invalidates stale cache.
 18. **Per-person vs vehicle fare confusion in the frontend** — `SegmentFlowView.tsx` previously
     swapped `[lat,lng]→[lng,lat]` in 9 places; Leaflet needs `[lat,lng]` (what the backend
-    returns). **Fix**: single `legGeometry()` swap keeps it right.
+    returns). **Fix**: single `legGeometry()` swap keeps it right. ⚠️ **Superseded 2026-08-03**:
+    the backend then returned pre-swapped geometry, so `legGeometry` is now an **identity**
+    `[pt[0], pt[1]]` — the authoritative description is §20 #26 (and §14.6).
 19. **Path shown only at journey end** — geometry wasn't drawn per confirmed hop. **Fix**: map
     updates after each hop confirm.
 20. **Full-shape fallback in path chain** (NES Office→Doddaballapura random lines). **Fix**:
@@ -1511,14 +1575,15 @@ timing warm ≤3s, metro interchange both lines (Purple + Green from KBS, real d
 metro_line geometry), long-haul bus→metro transfer (285 → metro corridor, >10km, >30min, chains
 into Purple), Rajanukunte direct-285-to-Majestic (distance >10km, duration >30min).
 
-### `test_prompt4.py` (28)
+### `test_prompt4.py` (33)
 Reliability (high scores green, negative drag, permanently-closed always red, temporarily-closed
 capped yellow, unknown status no penalty, no-reviews explainable, pin_class edges), Sentiment
 (positive >0.6, negative <0.4, negation flips, neutral 0.5, empty average, average over reviews),
 TOPSIS (best-on-cost, best-on-time, weather prefers covered mode in rain, single route best-match,
 identical share rank 1, cc normalized, empty → [], custom weights normalize), RidePricing (total
 == vehicle fare not pp×group, all 5 providers estimated, fare grows with distance, live overrides
-estimate, bad live ignored, labels, surge never zero/negative).
+estimate, bad live ignored, labels, surge never zero/negative), segment geometry `_pathLabel`
+(exact/estimated).
 
 ### `test_prompt5.py` (20)
 Weather (WMO labels, None on network failure), News (classify, geo_tag silk board, dedup+TTL, merge
@@ -1527,11 +1592,11 @@ match, unknown → None, fallback flagged NOT live, fallback pairs ≥7), Proxy 
 creds, never referenced by API-key clients), LangGraph (live context all groups, rain feeds
 factors, failing tool never blocks, ask degrades without LLM, time_of_day factor).
 
-### `test_traffic_model.py` (9) + `test_no_fake_data.py` (6) — PROMPT_7
+### `test_traffic_model.py` (9) + `test_no_fake_data.py` (7) — PROMPT_7
 Traffic model: time-of-day crowd index in [1.0, 1.8], deterministic, mae field present, model_info
 shape, lazy load. Fake-data audit: every API payload's bus numbers ∈ GTFS routes, fares match fare
 engine, no unlabeled estimated, no LLM-copied review text, no fabricated geometry, no hardcoded
-news.
+news, interpolated segment geometries flagged `_pathLabel: "estimated"`.
 
 ### QA commands
 - Backend tests: `python -m pytest tests/ -q` (in `PROJECT/`) → **104 passed**
@@ -1696,11 +1761,11 @@ road paths; point judges at Render URL.
 | 7 | POST | `/api/rides/prices` | `{origin, destination, group_size}` | `{prices:[RidePrice]}` |
 | 8 | POST | `/api/langgraph/route-context` | `{source, destination, group_size, budget, current_time?, place?}` | `LiveContext` dict (weather/traffic/news/prices/reviews/factors/errors/completed_at) |
 | 9 | POST | `/api/langgraph/ask` | `{message, lat?, lng?, context?}` | `{live_context, synthesis:{answer, factors}}` |
-| 10 | GET | `/api/search/news` | `lat?`, `lng?`, `keyword=""`, `limit=10` | `{items:[news]}` |
+| 10 | GET | `/api/search/news` | `lat?`, `lng?`, `keyword=""`, `limit=10` (backend default; frontend `api.news` sends `15`) | `{items:[news]}` |
 | 11 | GET | `/api/search/weather` | `lat`, `lng` | weather dict or `{"condition":"unavailable"}` |
-| 12 | GET | `/api/search/photo` | `name`, `max_width=400` | 307 Redirect to real Google photo URL, or `{"error":"no photo"}` |
+| 12 | GET | `/api/search/photo` | `name`, `max_width=400` | image bytes (server-side proxy; key never leaves server), or 404 |
 | 13 | GET | `/api/routes/live-trains` | `from_station`, `to_station` | `{trains[], source: live\|fallback\|none, note}` |
-| 14 | POST | `/api/routes/drive` | `{origin:{lat,lng,name}, destination:{lat,lng,name}}` (DriveRequest) | `{geometry:[{lat,lng},…] as [[lat,lng]…], distance_m, duration_s, path_source:"graphhopper"\|"interpolated", mode:"car"}` |
+| 14 | POST | `/api/routes/drive` | `{origin:{lat,lng,name}, destination:{lat,lng,name}}` (DriveRequest) | `{geometry:[{lat,lng},…] as [[lat,lng]…], distance_m, duration_s, path_source:"graphhopper"\|"interpolated", mode:"car", fuel_price_per_liter}` |
 | — | GET | `/api/health` | — | `{status:"ok", services_loaded}` |
 
 **LIVE:** `GET /api/routes/traffic-model-info` (PROMPT_7).
@@ -1954,7 +2019,7 @@ real eRail data.**
 
 ### 28.10 Frontend State Flow
 - `AppContext` holds: mode, dark, userLoc, source, dest, weather, places, selected, showDiscovery,
-  prices, ridePath, liveContext, news, journey, flyTo (+ setters). `setJourney` merges partials.
+  prices, ridePath, news, journey, flyTo (+ setters). `setJourney` merges partials.
 - `api.ts` is the ONLY HTTP layer (baseURL `VITE_API_BASE ?? http://localhost:8000/api`, 120 s
   timeout, AbortController on search/segments).
 - Tab shell: `MainPage` → Sidebar (SearchPanel / AToBPanel / TripPanel) + `.map-wrap` (MapView +
@@ -2240,9 +2305,9 @@ animation: slide-up 0.25s ease;                 /* slides up from the map bottom
 
 ### 32.7 Progress badge on every hop card
 
-`SegmentFlowView.tsx` — new `havKm()` (line 30) computes straight-line km from a hop's
+`SegmentFlowView.tsx` — `havKm()` (line 30) computes straight-line km from a hop's
 `destinationStop` to the final destination; each hop card shows
-`<span className="small dest-progress">→ X.X km to dest</span>` (line 267–269), so the user sees
+`→ X.X km to dest`, so the user sees
 progress toward the destination at every level (not just "hop 3 of N").
 
 ### 32.8 Verification performed (all green)
@@ -2254,7 +2319,7 @@ progress toward the destination at every level (not just "hop 3 of N").
 5. Short-hop regression (MG Road → Near MG Road): still returns a **free walk** as ★ Top (T4).
 6. Servers restarted to run the edited code: backend uvicorn (new PID) on :8000, Vite (new PID) on
    :3000, GraphHopper wslrelay still on :8080. Verified: health OK, frontend HTTP 200, Vite serves
-   the new `SegmentFlowView.tsx` (contains `visited` filter + `dest-progress`), `MainPage.css`
+   the new `SegmentFlowView.tsx` (contains `visited` filter + km-to-dest badge), `MainPage.css`
    contains `z-index: 1000` for `.flow-sheet`.
 
 ### 32.9 EVERYTHING IN THE SYSTEM, EXPLAINED (the "understand every element" reference)
@@ -2733,3 +2798,70 @@ tree** (`HopTreeView`) replacing the vertical option cards. QA gate: `pytest tes
 PROMPT_9). Before every commit: `git pull`, `pytest tests/ -q`, `npx tsc --noEmit`, then push. This
 file is fully self-contained — no old
 folder is needed.*
+
+---
+
+## 35. THE 2026-08-04C SESSION — FRONTEND MOTION + GLASS POLISH (Search/Nearby panel)
+
+> Executed 2026-08-04. Phase 1 + Phase 2 of the search-panel interactivity/polish spec, then the
+> glassmorphism pass. Gate: `pytest tests/ -q` = **104 passed**, `npx tsc --noEmit` = **0 errors**,
+> `npm run lint` = no new warnings, live smoke + headless-Chrome render Verified.
+
+### 35.1 New dependencies (owner-approved installs)
+- **framer-motion** (was NOT previously installed despite earlier assumptions) — all panel motion.
+- **react-leaflet-cluster 4.x** (+ leaflet.markercluster) — v4 is the react-leaflet ^5 / React 19
+  compatible line. Both installs: 0 vulnerabilities.
+
+### 35.2 Phase 1 — core interactivity (all in `SearchPanel.tsx/.css`)
+- Segmented tab control: `layoutId="seg-pill"` sliding pill + `AnimatePresence` cross-fade.
+- Category chips: multi-select, spring pop `[0.9, 1.08, 1]`, count line, animated ✓.
+- Radius slider: gradient track, snap ticks, floating tooltip while dragging.
+- CTA: inline spinner → checkmark morph, press scale 0.97, hover glow.
+- Search input: icon morph search→spinner→X, debounced keyboard-navigable suggestions with `<mark>`.
+- Results: staggered cards, `hoveredPlaceId` card↔pin hover sync.
+- Map pins: staggered `pin-wrap` drop-in; `.hot` class toggled **directly on the DOM element** via a
+  `pinEls` ref Map (NOT `setIcon` — setIcon replays the drop animation). Approved by owner via diff
+  preview before touching MapView.
+- `AppContext` gained `hoveredPlaceId/setHoveredPlaceId` (interface + state + value + deps).
+
+### 35.3 Phase 2 — depth, state design, clustering
+- **Glass windows** (`MainPage.css`): translucent `rgba(15,20,35,0.72)` dark / white 0.68 light,
+  `backdrop-filter: blur(20px) saturate(1.4)` + `-webkit-`, top-edge inset highlight
+  `rgba(255,255,255,0.08)` (top only), `@supports not (backdrop-filter…)` → 0.94 fallback. Static
+  blur only (never animated). Blur is real: windows `z-index:900` over `.map-wrap` `z-index:0`.
+- **Idle/ambient:** CTA breathing glow after 8s idle, once per session (`interactedRef`); chips
+  stagger in on first mount only (`chipsAnimatedRef`).
+- **Chip ripple** at exact tap point (`spawnRipple(el, clientX, clientY)`, 300ms, GC'd) + per-chip
+  Material icon (`CATEGORY_ICONS`).
+- **Live radius circle:** slider drag pushes `nearbyBase` at rAF rate (`rafRef`) → `<Circle>` on map
+  grows/shrinks in real time.
+- **Results state:** `searching` → skeleton cards replace list in place (results window);
+  `searched` + empty → empty state with **"Widen search radius"** button
+  (`setRadiusKm(+3)` + `CustomEvent("voyager:rerun-nearby")`, listened to by `SearchInput`).
+  Rating **CountUp** (framer `animate`, 400ms); teal `badge.info` distance badge slides in.
+- **Color hierarchy:** purple = selection/primary only; teal `--secondary` = status/info
+  (distance, "Open now", cluster ≥50); amber `badge.warn` = closed/warnings.
+- **Tab depth:** view swap scales 0.98 both ways.
+- **Clustering (§14.7):** `MarkerClusterGroup` (maxClusterRadius 48, chunkedLoading, spiderfy),
+  custom tiered count bubbles (<10 purple / <50 deep purple / ≥50 teal), dark CSS overrides.
+  User-location pulsing ring already existed (`marker-user::after`).
+
+### 35.4 One bug found + fixed (crash)
+- `ReferenceError: Cannot access 'switchTab' before initialization` (white screen): the
+  `voyager:rerun-nearby` listener's deps array referenced `switchTab` before its `useCallback`
+  declaration (TDZ). Fixed by declaring `switchTab` (useCallback) and `runNearbyRef` BEFORE the
+  listener effect. Verified with headless Chrome (`--dump-dom` + `--enable-logging=stderr`) — zero
+  console errors, full app renders (search-panel, seg-pill, leaflet nodes).
+
+### 35.5 QA (this session)
+- `npx tsc --noEmit` 0 errors · `npm run lint` no new warnings · all touched modules live-compile
+  on Vite :3000 · headless Chrome render + console check clean · screenshots saved at
+  `/tmp/opencode/panel-before.png` / `panel-after.png` (glass pass).
+
+*Session 2026-08-04C complete. Search/Nearby panel is now fully animated (framer-motion, one easing
+`cubic-bezier(0.22,1,0.36,1)`, springs for pops, transform/opacity only, `prefers-reduced-motion`
+fallbacks, visible focus rings), results have skeleton/empty/count-up states, nearby pins drop in
+staggered, hover-sync with cards, and cluster at 5–10km; both floating windows are true translucent
+glass over the map. Frontend files touched: `SearchPanel.tsx/.css`, `MapView.tsx`, `AppContext.tsx`,
+`MainPage.css`, `index.css`, `package.json` (+framer-motion, +react-leaflet-cluster). Docs: this
+§35 + PROMPT_6 §2/§4/§6/§12/§15 updated.*

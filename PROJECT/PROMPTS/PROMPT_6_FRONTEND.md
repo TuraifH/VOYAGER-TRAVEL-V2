@@ -12,10 +12,15 @@ Rebuild the React/TS web frontend on the existing glassmorphism design system, w
 
 ## 2. Stack & Conventions
 
-- Vite + React 18/19 + TypeScript, Leaflet + react-leaflet for map, Material Symbols for icons, Inter font.
-- `AppContext` for global state (mode, location, markers, routing state, journey, dark mode, weather, discovery panel, prices).
+- Vite + React 19 + TypeScript, Leaflet + react-leaflet for map, **framer-motion** for all
+  transitions/motion, **react-leaflet-cluster** (+ leaflet.markercluster) for pin clustering,
+  Material Symbols for icons, Inter font.
+- `AppContext` for global state (mode, location, markers, routing state, journey, dark mode, weather,
+  discovery panel, prices, hoveredPlaceId, searching/searched, radiusKm).
 - Axios client (`services/api.ts`) with typed interfaces, AbortController, 120s timeout.
-- **Gate: `npx tsc --noEmit` must pass with zero errors.** No `any` for API payloads — full typed contracts matching the backend JSON schemas.
+- Styling is **plain CSS with design tokens** (`index.css` vars + per-component CSS) — NOT Tailwind.
+- **Gate: `npx tsc --noEmit` must pass with zero errors.** No `any` for API payloads — full typed
+  contracts matching the backend JSON schemas.
 
 ## 3. Layout (MainPage.tsx)
 
@@ -47,6 +52,18 @@ Rebuild the React/TS web frontend on the existing glassmorphism design system, w
   - Selected place: larger pulsing star pin.
   - News: small `!` markers colored by category.
 - **Hover uplift:** marker scales 1.15×; shows mini popup with name + rating + reliability + hours.
+- **Nearby pins (2026-08-04 polish):** numbered pins drop in with a **staggered CSS animation**
+  (`pin-wrap` wrapper, 60ms × index, `cubic-bezier(0.22,1,0.36,1)`), and hover-sync with result
+  cards: hovering a card toggles a `.hot` class (scale 1.3 + primary glow) directly on the pin's DOM
+  element via a `pinEls` ref map (never `setIcon` — that would replay the drop animation); marker
+  `mouseover/mouseout` write `hoveredPlaceId` so the card highlights back.
+- **Clustering (2026-08-04):** numbered nearby pins render inside `MarkerClusterGroup`
+  (`maxClusterRadius:48`, `chunkedLoading`, `spiderfyDistanceMultiplier:1.6`,
+  `showCoverageOnHover:false`). Custom `clusterIcon(cluster)` → `divIcon` count bubble, tiers:
+  <10 purple / <50 deep purple / ≥50 teal, hover scale 1.15 (CSS in `index.css`, dark-theme styled).
+- **Live radius circle (2026-08-04):** dragging the Nearby slider pushes `nearbyBase` through context
+  **at animation-frame rate** (rAF-throttled in `SearchInput.onRadiusChange`) → `<Circle>` on the map
+  grows/shrinks in real time, not just the "X km" label.
 - **Route polylines:** colored per leg mode (transit=primary, walk=secondary dashed, connecting=orange, drop-off=amber). **Real geometry only** — straight lines only if `geometrySource: "interpolated"` (render a dashed + "approx path" tag).
 - **Accumulated paths:** each confirmed hop appends its geometry; map fits full journey.
 
@@ -56,12 +73,55 @@ Clock (12h, updates/sec), weather icon + temp (from `/api/search/weather`), loca
 
 ## 6. SearchPanel (Search Mode)
 
-Tabs: **Search Specific** + **Search Nearby** (+ search suggestion autocomplete dropdown ≥2 chars, 300ms debounce, click → search).
+Two floating glass windows over the map (see §12 for the glass treatment): `.input-window`
+(top-left) = `SearchInput`; `.results-window` (below it) = `SearchResults`. Both `z-index:900`.
 
-- **Search Specific:** query → results as cards (name, address, distance, type badge, star rating, hours, **reliability pill colored**, photo thumbnail, hotel price range if stay-type, AI review summary, expandable real reviews with username/rating/date, "Details" + "Navigate" buttons). Card bg + left border colored by reliability class. Selected card highlights.
-- **Search Nearby:** category chips (19: ATM, Bank, Hospital, Pharmacy, Restaurant, Cafe, Hotel, Mall, Petrol Pump, EV Station, Supermarket, Park, Bus Stop, Metro, Temple, Police, School, Gym, Cinema), radius slider (0.5–10km) → numbered pins on map + cards.
-- **Location pinned banner:** after Search Specific picks a place, show "Location pinned — search nearby around it" chip that seeds Nearby around that place.
+**Tabs (Search ↔ Nearby) — segmented control (2026-08-04 polish):**
+- Active pill is a shared `motion.span layoutId="seg-pill"` → the background **slides/morphs**
+  between tabs (spring, stiffness 420/damping 34), never an instant color swap.
+- View swap = `AnimatePresence mode="wait"` cross-fade + 8px vertical slide + **scale depth**
+  (outgoing → 0.98, incoming 0.98 → 1) — no abrupt layout swap.
+
+**Search specific:**
+- Icon button **morphs**: magnifying glass → inline spinner (query in flight) → "X" clear once text
+  exists (AnimatePresence mode="wait" on each glyph).
+- Debounced (300ms) live suggestions ≥2 chars: glass dropdown, **staggered slide-in per row**
+  (35ms × i), **keyboard navigation** (ArrowUp/Down + Enter + Escape, `aria-activedescendant`),
+  matching substring wrapped in `<mark>` (primary-tinted highlight).
+- Input container glows (`:focus-within` 4px primary halo).
+- Results as cards (name, address, distance badge, type, star rating, hours, reliability pill
+  colored, photo thumbnail, hotel price range if stay-type, AI review summary, expandable real
+  reviews, "Details" + "Navigate" buttons). Card bg + left border colored by reliability class.
+
+**Search nearby:**
+- 19 category chips (ATM, Bank, Hospital, Pharmacy, Restaurant, Cafe, Hotel, Mall, Petrol Pump,
+  EV Station, Supermarket, Park, Bus Stop, Metro, Temple, Police, School, Gym, Cinema) —
+  **multi-select**, each with a Material icon + animated ✓ checkmark; spring pop
+  (0.9 → 1.08 → 1) on toggle; **ripple burst from the tap point** (DOM span, 300ms, GC'd);
+  hover lift 2px; stagger in 50ms × i on first mount. Count badge below ("3 selected").
+- Radius slider (0.5–10 km, step 0.5, snap ticks at 0.5/1/2/5/10 km): thumb scales up + floating
+  tooltip pill ("2 km") while dragging; filled track = primary gradient; **live radius circle on the
+  map at rAF rate** (§4).
+- **"Find nearby" CTA:** on click → inline spinner "Finding…" → brief checkmark "Found" (1.5s) →
+  idle; press scale 0.97; glow hover; after **8s idle** (once per session) a breathing box-shadow
+  pulse until first interaction.
+- **Location pinned banner:** after Search Specific picks a place, "Near {name}" chip seeds Nearby
+  around that place (Clear button).
 - **Navigate** button → switches to A→B with dest pre-filled.
+
+**Results window (2026-08-04 polish):**
+- While a search is in flight → **shimmer skeleton cards** replace the list in place (context
+  `searching`), not a floating spinner.
+- Zero results after a search → explicit empty state: `search_off` icon (spring scale-in), "No
+  places found at X km.", and a **"Widen search radius"** button that bumps radius (+3km, capped)
+  and re-triggers the search. Cross-window trigger = `CustomEvent("voyager:rerun-nearby")` on
+  `window`, listened to by `SearchInput` (switches to Nearby tab if needed).
+- Result cards: staggered entrance (60ms × i, capped 0.54s); **rating counts up 0 → value over
+  400ms** (`animate()` from framer-motion, delayed until card lands); **distance badge** = teal
+  `badge.info` with `near_me` icon sliding in after the card; open/closed = teal `info` / amber
+  `warn`.
+- **Hover sync:** hovering a card sets `hoveredPlaceId` → map pin `.hot` bounce + glow; hovering a
+  pin highlights the card (vice-versa).
 
 ## 7. DiscoveryPanel (right-side glass panel)
 
@@ -115,6 +175,38 @@ Floating glass LIVE panel: "LIVE" badge with pulsing dot, auto-refresh every 2 m
 - New: hop-card, breadcrumb, timeline, skeleton, marker-glow classes in the SAME design language.
 - Animations: slide-up/fade-in/scale-in, pulse ring (user/dest), pulse dot (live), shimmer skeletons, spin loader, hover-scale.
 
+### 12.1 Floating-window glassmorphism (2026-08-04)
+- `.input-window` / `.results-window` are **translucent glass**, not flat fills: dark
+  `rgba(15,20,35,0.72)` / light `rgba(255,255,255,0.68)`, `backdrop-filter: blur(20px) saturate(1.4)`
+  + `-webkit-` prefix (Safari/iOS). **Blur is static — never animate it** (repaint cost); entrance
+  animations animate opacity/transform only.
+- Fake light source: `box-shadow: inset 0 1px 0 rgba(255,255,255,0.08)` on the **top edge only**;
+  other three sides keep the hairline `--panel-border`. Outer elevation: `var(--shadow)`.
+- Fallback `@supports not (backdrop-filter…)` → near-opaque `rgba(15,20,35,0.94)` / white 0.94.
+- Nested content (chips, inputs, CTA) stays **flat opaque** (`var(--panel)`/`--panel-strong`) — no
+  stacked blur layers. Blur works because `.map-wrap` (`z-index:0`) sits behind the windows
+  (`z-index:900`).
+- Contrast rule: panel fill between 60–80% opacity so text stays legible over bright map tiles.
+
+### 12.2 Motion language (2026-08-04, all panel/UI motion)
+- One easing everywhere: `cubic-bezier(0.22, 1, 0.36, 1)`; pops use springs
+  (stiffness 420–600 / damping 24–34). **transform/opacity only** — never animate layout
+  properties (width/height/inset); auto-height handled by framer `layout`.
+- `prefers-reduced-motion` respected two ways: framer `MotionConfig reducedMotion="user"` + CSS
+  media query killing animations/transitions in the panel and pin-drop.
+- Every interactive element has a visible `:focus-visible` ring (2px primary + offset) and is
+  Tab-reachable (segmented tabs, chips, suggestions, slider, CTA, cards).
+- Idle/ambient: CTA "breathing" glow after 8s idle (once per session, stops on first click); chips
+  stagger on first mount only.
+
+### 12.3 Color hierarchy (2026-08-04)
+- **Purple `--primary` = selection + primary action only** (tab pill, active chip, CTA, selected
+  states, score-pill classes).
+- **Teal `--secondary` (#00cec9) = status/info** — distance badges, "Open now", cluster bubbles
+  ≥50, live/info elements: `badge.info`.
+- **Amber `--warn` = warnings/closed** (`badge.warn`). Red = errors/closed-permanently.
+- Nothing else borrows purple for passive info — one clear visual language per state.
+
 ## 13. Data Hygiene Rules (frontend)
 
 1. **Render exactly what the backend sends.** No mock/default/fallback sample data in the UI.
@@ -139,6 +231,14 @@ Define TS interfaces mirroring backend JSON exactly:
 - [ ] GPS tracking: start journey → pulsing blue dot follows user; end journey stops
 - [ ] Dark mode consistent everywhere (no stray hardcoded hexes)
 - [ ] Mobile responsive (≤768px) layout correct
+- [ ] Segmented tabs slide the pill (layoutId) + crossfade/scale-depth view swap
+- [ ] Chips: multi-select count + checkmark + icon + tap ripple; slider tooltip/snap + live map circle
+- [ ] CTA morphs spinner → checkmark; idle glow after 8s, once per session
+- [ ] Suggestions: keyboard-navigable, substring `<mark>` highlight, staggered rows
+- [ ] Results: skeleton-in-place while searching; empty state + "Widen search radius" re-runs;
+      rating count-up; teal distance badge
+- [ ] Card ↔ pin hover sync both ways; pins drop in staggered; wide searches cluster (count bubbles)
+- [ ] Windows are translucent glass (map visibly blurs through); `@supports` fallback; static blur only
 
 ## 16. Hand-off
 - After this lands, PROMPT_7 wires ML + integration tests and the full end-to-end QA pass.

@@ -97,7 +97,9 @@ def test_estimated_geometries_are_flagged(builder):
     opts = _all_options(builder, YELAHANKA_SCHOOL, WONDERLA)
     for o in opts:
         if o["geometrySource"] == "interpolated":
-            assert o.get("_pathLabel") == "estimated" or True  # geometry flagged by source field
+            assert o.get("_pathLabel") == "estimated"
+        else:
+            assert o.get("_pathLabel") == "exact"
 
 
 def test_ride_prices_are_estimated_or_live(builder):

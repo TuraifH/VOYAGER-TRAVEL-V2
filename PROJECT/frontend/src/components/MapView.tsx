@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Circle, useMap } from "react-leaflet";
+import MarkerClusterGroup from "react-leaflet-cluster";
 import L from "leaflet";
+import type { MarkerCluster } from "leaflet.markercluster";
 import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import { useApp, scoreClass } from "../context/AppContext";
 import type { Coord, HopOption, LatLng } from "../types";
 
@@ -24,9 +28,24 @@ function userIcon() {
 function pinIcon(cls: string) {
   return L.divIcon({ className: "", html: `<div class="marker-pin ${cls}"><span>${cls[0].toUpperCase()}</span></div>`, iconSize: [30, 30] });
 }
-function numIcon(n: number) {
+function numIcon(n: number, delayMs = 0) {
   const c = NUM_COLORS[n % NUM_COLORS.length];
-  return L.divIcon({ className: "", html: `<div class="marker-num" style="background:${c}">${n + 1}</div>`, iconSize: [26, 26] });
+  return L.divIcon({
+    className: "",
+    html: `<div class="pin-wrap" style="animation-delay:${delayMs}ms"><div class="marker-num nearby-pin" style="background:${c}">${n + 1}</div></div>`,
+    iconSize: [30, 30],
+  });
+}
+
+// cluster bubble for wide-radius searches: count badge, splits apart on zoom
+function clusterIcon(cluster: MarkerCluster) {
+  const n = cluster.getChildCount();
+  const tier = n < 10 ? "small" : n < 50 ? "medium" : "large";
+  return L.divIcon({
+    className: "cluster-icon",
+    html: `<div class="cluster-num ${tier}"><span>${n}</span></div>`,
+    iconSize: L.point(tier === "small" ? 40 : tier === "medium" ? 48 : 56),
+  });
 }
 function starIcon() {
   return L.divIcon({ className: "", html: `<div class="marker-star">★</div>`, iconSize: [40, 40] });
@@ -144,8 +163,17 @@ function ConfirmedLegs() {
 }
 
 function Pins() {
-  const { places, selected, userLoc, source, dest, journey, news } = useApp();
+  const { places, selected, userLoc, source, dest, journey, news, hoveredPlaceId, setHoveredPlaceId } = useApp();
   const numbered = journey.active ? [] : places; // numbered pins hidden during journey
+  const pinEls = useRef(new Map<string, HTMLElement | null>());
+
+  // sync card hover → pin highlight by toggling .hot directly on the DOM element
+  // (leaflet setIcon would recreate the element and replay the drop animation)
+  useEffect(() => {
+    for (const [id, el] of pinEls.current) {
+      el?.querySelector(".marker-num")?.classList.toggle("hot", id === hoveredPlaceId);
+    }
+  }, [hoveredPlaceId]);
 
   return (
     <>
@@ -165,23 +193,40 @@ function Pins() {
           <Popup>{selected.name}</Popup>
         </Marker>
       )}
-      {numbered.map((p, i) => {
-        const cls = p.business_status === "CLOSED_PERMANENTLY" ? "red" : scoreClass(p.rating ? p.rating * 20 : null);
-        return (
-          <Marker key={p.place_id || i} position={[p.lat, p.lng]} icon={numIcon(i)}>
-            <Popup>
-              <b>{p.name}</b>
-              <div className="muted">{p.address}</div>
-              {p.rating != null && <div>★ {p.rating} ({p.user_rating_count ?? 0})</div>}
-              <div>
-                <span className={`score-pill ${cls}`}>
-                  {p.business_status ?? "OPERATIONAL"}
-                </span>
-              </div>
-            </Popup>
-          </Marker>
-        );
-      })}
+      <MarkerClusterGroup
+        chunkedLoading
+        maxClusterRadius={48}
+        showCoverageOnHover={false}
+        spiderfyDistanceMultiplier={1.6}
+        iconCreateFunction={clusterIcon}
+      >
+        {numbered.map((p, i) => {
+          const cls = p.business_status === "CLOSED_PERMANENTLY" ? "red" : scoreClass(p.rating ? p.rating * 20 : null);
+          return (
+            <Marker
+              key={p.place_id || i}
+              position={[p.lat, p.lng]}
+              icon={numIcon(i, Math.min(i * 60, 540))}
+              ref={(m) => { pinEls.current.set(p.place_id || String(i), m?.getElement() ?? null); }}
+              eventHandlers={{
+                mouseover: () => setHoveredPlaceId(p.place_id),
+                mouseout: () => setHoveredPlaceId(null),
+              }}
+            >
+              <Popup>
+                <b>{p.name}</b>
+                <div className="muted">{p.address}</div>
+                {p.rating != null && <div>★ {p.rating} ({p.user_rating_count ?? 0})</div>}
+                <div>
+                  <span className={`score-pill ${cls}`}>
+                    {p.business_status ?? "OPERATIONAL"}
+                  </span>
+                </div>
+              </Popup>
+            </Marker>
+          );
+        })}
+      </MarkerClusterGroup>
       {news.map((n, i) =>
         n.geo ? (
           <Marker key={i} position={[n.geo.lat, n.geo.lng]} icon={newsIcon(n.category ?? "general")}>

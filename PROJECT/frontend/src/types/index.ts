@@ -10,6 +10,13 @@ export interface LatLng {
 }
 
 // ============================================================ weather
+export interface WeatherHour {
+  time: string;
+  temp_c: number | null;
+  condition: string;
+  rain_prob: number | null;
+}
+
 export interface WeatherNow {
   temp_c: number | null;
   condition: string;
@@ -18,6 +25,7 @@ export interface WeatherNow {
   wind_kmh?: number;
   is_day?: boolean;
   rain_next_hour?: boolean;
+  hourly?: WeatherHour[];
   source?: string;
 }
 
@@ -89,6 +97,7 @@ export interface DriveRoute {
   duration_s: number;
   path_source: string;
   mode: string;
+  fuel_price_per_liter: number;
 }
 
 // ============================================================ routes / segments

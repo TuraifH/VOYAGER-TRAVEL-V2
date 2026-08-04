@@ -2,7 +2,6 @@ import axios from "axios";
 import type {
   DriveRoute,
   LatLng,
-  LiveContext,
   NewsItem,
   PlaceDetails,
   PlaceResult,
@@ -22,15 +21,12 @@ export interface Api {
   searchPlaces: (q: string, lat?: number, lng?: number, signal?: AbortSignal) => Promise<PlaceResult[]>;
   searchNearby: (lat: number, lng: number, radiusM: number, categories?: string[], keyword?: string, signal?: AbortSignal) => Promise<PlaceResult[]>;
   enrichPlace: (place: PlaceResult) => Promise<PlaceDetails>;
-  verifyPlace: (name: string, lat: number, lng: number) => Promise<PlaceResult | null>;
   weather: (lat: number, lng: number) => Promise<WeatherNow | null>;
   news: (lat?: number, lng?: number, keyword?: string, limit?: number) => Promise<NewsItem[]>;
   ridePrices: (origin: LatLng, dest: LatLng, groupSize: number) => Promise<RidePrice[]>;
   quickSuggestion: (src: LatLng, dst: LatLng, groupSize: number, budget: number, currentTime?: string | null) => Promise<QuickSuggestionResponse>;
   routeSegments: (src: LatLng, dst: LatLng, groupSize: number, budget: number, currentTime?: string | null, signal?: AbortSignal) => Promise<SegmentResponse>;
   segmentNext: (journey: unknown, chosenLegs: unknown[], groupSize: number, budget: number) => Promise<SegmentResponse>;
-  routeContext: (src: LatLng, dst: LatLng, groupSize: number, budget: number, place?: PlaceResult | null) => Promise<LiveContext>;
-  liveTrains: (from: string, to: string) => Promise<{ trains: unknown[]; source: string; note?: string }>;
   driveRoute: (origin: LatLng, dest: LatLng) => Promise<DriveRoute>;
   tripPlan: (p: TripPlanRequest) => Promise<TripPlan>;
 }
@@ -62,11 +58,6 @@ export const api: Api = {
   async enrichPlace(place) {
     const { data } = await http.post<PlaceDetails>("/search/enrich", { place });
     return data;
-  },
-
-  async verifyPlace(name, lat, lng) {
-    const { data } = await http.post<{ verified: PlaceResult | null }>("/search/verify", { name, lat, lng });
-    return data.verified;
   },
 
   async weather(lat, lng) {
@@ -118,24 +109,6 @@ export const api: Api = {
       chosen_legs: chosenLegs,
       group_size: groupSize,
       budget,
-    });
-    return data;
-  },
-
-  async routeContext(src, dst, groupSize, budget, place = null) {
-    const { data } = await http.post<LiveContext>("/langgraph/route-context", {
-      source: { ...src, name: src.name ?? "" },
-      destination: { ...dst, name: dst.name ?? "" },
-      group_size: groupSize,
-      budget,
-      place: place ?? null,
-    });
-    return data;
-  },
-
-  async liveTrains(from, to) {
-    const { data } = await http.get<{ trains: unknown[]; source: string; note?: string }>("/routes/live-trains", {
-      params: { from_station: from, to_station: to },
     });
     return data;
   },

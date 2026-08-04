@@ -234,7 +234,8 @@ export default function AtoBInput() {
       const route = await api.driveRoute(source, dest);
       setRidePath((route.geometry ?? []).map((pt) => [Number(pt[0]), Number(pt[1])]));
       const distKm = (route.distance_m ?? 0) / 1000;
-      const fuel = (110.0 * distKm) / mileage;
+      const fuelPerLiter = route.fuel_price_per_liter ?? 110.0;
+      const fuel = (fuelPerLiter * distKm) / mileage;
       setResults({ fuel: Math.round(fuel * 100) / 100 });
     } catch {
       setRidePath(null);
