@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
-import type { Coord, LatLng, NewsItem, PlaceDetails, PlaceResult, RidePrice, SegmentResponse, WeatherNow } from "../types";
+import type { Coord, LatLng, LiveContext, NewsItem, PlaceDetails, PlaceResult, QuickPlan, RidePrice, SegmentResponse, TripInputData, WeatherNow } from "../types";
 
 export type Mode = "search" | "atob" | "trip";
 
@@ -57,6 +57,8 @@ interface AppState {
   setPrices: (p: RidePrice[]) => void;
   fuel: number | null;
   setFuel: (f: number | null) => void;
+  quickPlans: QuickPlan[];
+  setQuickPlans: (p: QuickPlan[]) => void;
   nearbyBase: NearbyBase | null;
   setNearbyBase: (b: NearbyBase | null) => void;
   clearTransient: () => void;
@@ -74,6 +76,9 @@ interface AppState {
 
   journey: JourneyState;
   setJourney: (j: Partial<JourneyState>) => void;
+
+  trip: TripInputData | null;
+  setTrip: (t: TripInputData | null) => void;
 
   flyTo: LatLng | null;
   setFlyTo: (p: LatLng | null) => void;
@@ -99,6 +104,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [prices, setPrices] = useState<RidePrice[]>([]);
   const [fuel, setFuel] = useState<number | null>(null);
+  const [quickPlans, setQuickPlans] = useState<QuickPlan[]>([]);
   const [nearbyBase, setNearbyBase] = useState<NearbyBase | null>(null);
   const [ridePath, setRidePath] = useState<Coord[] | null>(null);
   const [flowOpen, setFlowOpen] = useState(false);
@@ -110,6 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     active: false,
     position: null,
   });
+  const [trip, setTrip] = useState<TripInputData | null>(null);
   const [flyTo, setFlyTo] = useState<LatLng | null>(null);
 
   const toggleDark = () => {
@@ -135,6 +142,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setShowDiscovery(false);
     setPrices([]);
     setFuel(null);
+    setQuickPlans([]);
     setNearbyBase(null);
     setRidePath(null);
     setFlyTo(null);
@@ -152,15 +160,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pinned, setPinned,
     searching, setSearching, searched, setSearched, radiusKm, setRadiusKm,
     selected, setSelected, showDiscovery, setShowDiscovery,
-    prices, setPrices, fuel, setFuel,
+    prices, setPrices, fuel, setFuel, quickPlans, setQuickPlans,
     nearbyBase, setNearbyBase, clearTransient,
     ridePath, setRidePath,
     flowOpen, setFlowOpen, flowParams, setFlowParams,
     news, setNews,
     journey, setJourney,
+    trip, setTrip,
     flyTo, setFlyTo,
-  }), [mode, dark, userLoc, source, dest, weather, places, searchResults, hoveredPlaceId, pinned, searching, searched, radiusKm,
-      selected, showDiscovery, prices, fuel, nearbyBase, ridePath, flowOpen, flowParams, news, journey, flyTo]);
+  }), [mode, dark, userLoc, source, dest, weather, places, searchResults, pinned, selected, showDiscovery,
+      prices, fuel, quickPlans, nearbyBase, ridePath, flowOpen, flowParams, liveContext, news, journey, trip, flyTo]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

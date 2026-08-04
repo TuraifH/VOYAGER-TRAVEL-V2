@@ -5,8 +5,10 @@ import type {
   NewsItem,
   PlaceDetails,
   PlaceResult,
+  QuickSuggestionResponse,
   RidePrice,
   SegmentResponse,
+  TripPlan,
   WeatherNow,
 } from "../types";
 
@@ -22,9 +24,20 @@ export interface Api {
   weather: (lat: number, lng: number) => Promise<WeatherNow | null>;
   news: (lat?: number, lng?: number, keyword?: string, limit?: number) => Promise<NewsItem[]>;
   ridePrices: (origin: LatLng, dest: LatLng, groupSize: number) => Promise<RidePrice[]>;
+  quickSuggestion: (src: LatLng, dst: LatLng, groupSize: number, budget: number, currentTime?: string | null) => Promise<QuickSuggestionResponse>;
   routeSegments: (src: LatLng, dst: LatLng, groupSize: number, budget: number, currentTime?: string | null, signal?: AbortSignal) => Promise<SegmentResponse>;
   segmentNext: (journey: unknown, chosenLegs: unknown[], groupSize: number, budget: number) => Promise<SegmentResponse>;
   driveRoute: (origin: LatLng, dest: LatLng) => Promise<DriveRoute>;
+  tripPlan: (p: TripPlanRequest) => Promise<TripPlan>;
+}
+
+export interface TripPlanRequest {
+  destination: string;
+  interests: string[];
+  group_type: string;
+  days: number;
+  pace: string;
+  budget?: number;
 }
 
 export const api: Api = {
@@ -68,6 +81,17 @@ export const api: Api = {
     return data.prices;
   },
 
+  async quickSuggestion(src, dst, groupSize, budget, currentTime = null) {
+    const { data } = await http.post<QuickSuggestionResponse>("/routes/quick-suggestion", {
+      source: { ...src, name: src.name ?? "" },
+      destination: { ...dst, name: dst.name ?? "" },
+      group_size: groupSize,
+      budget,
+      current_time: currentTime,
+    });
+    return data;
+  },
+
   async routeSegments(src, dst, groupSize, budget, currentTime = null, signal) {
     const { data } = await http.post<SegmentResponse>("/routes/segments", {
       source: { ...src, name: src.name ?? "" },
@@ -94,6 +118,11 @@ export const api: Api = {
       origin: { ...origin, name: origin.name ?? "" },
       destination: { ...dest, name: dest.name ?? "" },
     });
+    return data;
+  },
+
+  async tripPlan(p) {
+    const { data } = await http.post<TripPlan>("/trip/plan", p);
     return data;
   },
 };

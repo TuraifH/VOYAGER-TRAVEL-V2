@@ -109,25 +109,14 @@ function NearbyRadius() {
 
 function RoutePolylines() {
   const { journey, ridePath } = useApp();
-  const segs = journey.segments?.segments ?? [];
   const chosen = journey.chosenLegs as HopOption[] | undefined;
-  const chosenByOpt = new Map((chosen ?? []).map((c) => [c.optionId, c]));
+  const lines: { pts: Coord[]; mode: string; hop: number }[] = [];
 
-  const lines: { pts: Coord[]; mode: string; solid: boolean; faint: boolean; hop: number | null }[] = [];
-
-  for (const seg of segs) {
-    for (const opt of seg.options ?? []) {
-      const pts = legGeometry(opt);
-      if (pts.length < 2) continue;
-      const hopIdx = chosenByOpt.has(opt.optionId) ? (chosen?.findIndex((c) => c.optionId === opt.optionId) ?? -1) + 1 : -1;
-      lines.push({
-        pts,
-        mode: opt.mode ?? "connecting",
-        solid: hopIdx > 0 || !!opt.isTopRecommended,
-        faint: hopIdx < 0 && !opt.isTopRecommended,
-        hop: hopIdx > 0 ? hopIdx : null,
-      });
-    }
+  for (const opt of chosen ?? []) {
+    const pts = legGeometry(opt);
+    if (pts.length < 2) continue;
+    const hopIdx = chosen.findIndex((c) => c.optionId === opt.optionId) + 1;
+    lines.push({ pts, mode: opt.mode ?? "connecting", hop: hopIdx });
   }
 
   return (
@@ -136,10 +125,10 @@ function RoutePolylines() {
         <Polyline
           key={i}
           positions={ln.pts}
-          color={ln.hop != null ? HOP_COLORS[(ln.hop - 1) % HOP_COLORS.length] : (MODE_COLOR[ln.mode] ?? "#6c5ce7")}
-          weight={ln.hop != null ? 6 : ln.faint ? 3 : ln.solid ? 5 : 4}
-          dashArray={ln.faint ? "4 6" : ln.mode === "walk" && ln.hop == null && !ln.solid ? "6 6" : undefined}
-          opacity={ln.hop != null ? 0.95 : ln.faint ? 0.3 : 0.85}
+          color={HOP_COLORS[(ln.hop - 1) % HOP_COLORS.length]}
+          weight={6}
+          dashArray={ln.mode === "walk" ? "6 6" : undefined}
+          opacity={0.95}
         />
       ))}
       {ridePath && ridePath.length > 1 && (
@@ -261,7 +250,7 @@ function JourneyPosition() {
 }
 
 export default function MapView() {
-  const { flyTo, userLoc, journey, ridePath } = useApp();
+  const { flyTo, userLoc, journey, ridePath, source, dest } = useApp();
   const center: [number, number] = useMemo(() => {
     if (userLoc) return [userLoc.lat, userLoc.lng];
     return [12.9716, 77.5946];
@@ -271,14 +260,11 @@ export default function MapView() {
   useEffect(() => {
     if (!mapRef.current) return;
     const pts: [number, number][] = [];
-    if (journey.segments) {
-      for (const seg of journey.segments.segments ?? []) {
-        for (const opt of seg.options ?? []) {
-          for (const pt of legGeometry(opt)) {
-            const [la, ln] = pt;
-            if (inBengaluru(la, ln)) pts.push(pt as [number, number]);
-          }
-        }
+    const chosen = journey.chosenLegs as HopOption[] | undefined;
+    for (const opt of chosen ?? []) {
+      for (const pt of legGeometry(opt)) {
+        const [la, ln] = pt;
+        if (inBengaluru(la, ln)) pts.push(pt as [number, number]);
       }
     }
     if (ridePath && ridePath.length > 1) {
@@ -287,8 +273,12 @@ export default function MapView() {
         if (inBengaluru(la, ln)) pts.push(pt as [number, number]);
       }
     }
+    if (!pts.length) {
+      const anchors = [source, dest].filter(Boolean) as LatLng[];
+      for (const a of anchors) if (inBengaluru(a.lat, a.lng)) pts.push([a.lat, a.lng]);
+    }
     if (pts.length) mapRef.current.fitBounds(L.latLngBounds(pts), { padding: [40, 40] });
-  }, [journey.segments, ridePath]);
+  }, [journey.chosenLegs, source, dest, ridePath]);
 
   return (
     <MapContainer

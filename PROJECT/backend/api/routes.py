@@ -22,6 +22,7 @@ from fastapi import APIRouter, Response
 from backend import config
 from backend.services import app_state
 from backend.services.data_schema import Place
+from backend.services.segment_builder import _parse_current_time
 
 
 router = APIRouter()
@@ -85,6 +86,23 @@ class DriveRequest(BaseModel):
     destination: PlaceModel
 
 
+class TripDiscoverRequest(BaseModel):
+    destination: str = "bengaluru"
+    interests: list[str] = Field(default_factory=list)
+    group_type: str = "friends"
+    limit: int = Field(default=12, ge=3, le=40)
+    budget: float | None = None
+
+
+class TripPlanRequest(BaseModel):
+    destination: str = "bengaluru"
+    interests: list[str] = Field(default_factory=list)
+    group_type: str = "friends"
+    days: int = Field(default=3, ge=1, le=30)
+    pace: str = "balanced"
+    budget: float | None = None
+
+
 @search_router.post("/routes/drive")
 def drive_route(req: DriveRequest):
     """GraphHopper car route -> {geometry, distance_m, duration_s, path_source}.
@@ -127,6 +145,60 @@ def segment_next(req: SegmentNextRequest):
         group_size=req.group_size,
         budget=req.budget,
     )
+
+
+def _quick_plan_json(p):
+    """Serialize a RoutePlan dataclass into a JSON-safe dict (legs -> lists)."""
+    return {
+        "legs": [
+            {
+                "mode": l.mode,
+                "route_number": l.route_number,
+                "from_stop": l.from_stop,
+                "to_stop": l.to_stop,
+                "from_lat": l.from_lat,
+                "from_lng": l.from_lng,
+                "to_lat": l.to_lat,
+                "to_lng": l.to_lng,
+                "line": l.line,
+                "depart_time": l.depart_time,
+                "arrive_time": l.arrive_time,
+                "duration_min": l.duration_min,
+                "distance_m": l.distance_m,
+                "fare": l.fare,
+                "per_person_fare": l.per_person_fare,
+                "geometry": [list(pt) for pt in l.geometry],
+                "geometry_source": l.geometry_source,
+                "status": l.status,
+                "alternate_routes": list(l.alternate_routes),
+            }
+            for l in p.legs
+        ],
+        "total_fare": p.total_fare,
+        "total_duration_min": p.total_duration_min,
+        "total_walk_km": p.total_walk_km,
+        "transfers": p.transfers,
+        "per_person_fare": p.per_person_fare,
+        "summary": p.summary,
+    }
+
+
+@router.post("/quick-suggestion")
+def quick_suggestion(req: SegmentsRequest):
+    """One-shot auto-computed best route (A* pathfinder), separate from the
+    interactive hop-by-hop tree. Returns the top ranked plans as flat leg lists.
+    """
+    finder = app_state.get_finder()
+    now_min, _iso = _parse_current_time(req.current_time)
+    budget_pp = max(1.0, req.budget / max(1, req.group_size))
+    plans = finder.find_routes_by_coords(
+        req.source.lat, req.source.lng,
+        req.destination.lat, req.destination.lng,
+        depart_min=now_min,
+        group_size=req.group_size,
+        budget_pp=budget_pp,
+    )
+    return {"plans": [_quick_plan_json(p) for p in plans]}
 
 
 # ============================================================ PROMPT_4 search
@@ -266,3 +338,35 @@ def traffic_model_info():
     info = model.model_info()
     info["range"] = [1.0, 1.8]
     return info
+
+
+# ====================================================== PROMPT_8 Trip Planner
+@search_router.get("/trip/destinations")
+def trip_destinations():
+    """Seeded destination catalogue for the Trip Planner Step-1 picker."""
+    return {"destinations": app_state.get_trip().destinations()}
+
+
+@search_router.post("/trip/places")
+def trip_discover(req: TripDiscoverRequest):
+    """Ranked, diversity-capped place pool for a destination + interests (2)."""
+    return app_state.get_trip().discover_places(
+        destination=req.destination,
+        interests=req.interests,
+        group_type=req.group_type,
+        limit=req.limit,
+        budget=req.budget,
+    )
+
+
+@search_router.post("/trip/plan")
+def trip_plan(req: TripPlanRequest):
+    """Day-wise itinerary: rank -> cluster by day -> order within day (3)."""
+    return app_state.get_trip().generate_plan(
+        destination=req.destination,
+        interests=req.interests,
+        group_type=req.group_type,
+        days=req.days,
+        pace=req.pace,
+        budget=req.budget,
+    )

@@ -1,12 +1,49 @@
 import { useMemo, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
-import type { HopOption, Segment, SegmentResponse } from "../types";
+import type { HopOption, LatLng, Segment, SegmentResponse } from "../types";
 import HopTreeView, { optionsForLevel } from "./HopTreeView";
 import "./SegmentFlowView.css";
 
 const legColor = (mode: string) =>
   ({ bus: "#6c5ce7", metro: "#00cec9", train: "#e17055", walk: "#95a5a6", ride: "#f39c12" }[mode] ?? "#6c5ce7");
+
+const ARRIVED_DEST_M = 500;
+
+function normName(n?: string | null): string {
+  return (n || "")
+    .toLowerCase()
+    .replace(/metro station/g, " ")
+    .replace(/metro/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function havM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const R = 6371000;
+  const dLa = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLo = ((b.lng - a.lng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLa / 2) ** 2 +
+    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * Math.sin(dLo / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
+}
+
+// BUG1: does a hop's arrival stop effectively reach the final destination?
+// Absolute name match OR arrival stop within ARRIVED_DEST_M of dest coords.
+function arrivesAtDestination(opt: HopOption, dest: LatLng | null): boolean {
+  if (!dest || !opt.destinationStop) return false;
+  const stop = opt.destinationStop;
+  if (dest.name) {
+    const sn = normName(stop.name);
+    const dn = normName(dest.name);
+    if (sn && sn === dn) return true;
+  }
+  if (typeof stop.lat === "number" && typeof stop.lng === "number" && typeof dest.lat === "number" && typeof dest.lng === "number") {
+    return havM(stop, dest as { lat: number; lng: number }) <= ARRIVED_DEST_M;
+  }
+  return false;
+}
 
 export default function SegmentFlowView({ groupSize, budget }: { groupSize?: number; budget?: number }) {
   const gs = groupSize ?? 1;
@@ -46,6 +83,13 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
     if (opt.geometry?.length) {
       const lastPt = opt.geometry[opt.geometry.length - 1];
       setFlyTo({ lat: Number(lastPt[0]), lng: Number(lastPt[1]) });
+    }
+
+    // BUG1: if this hop effectively reaches the destination (name match or within
+    // the arrived threshold of dest), the journey ENDS here — no further hops.
+    if (dest && arrivesAtDestination(opt, dest)) {
+      setComplete(true);
+      return;
     }
 
     const nextIdx = idx + 1;
@@ -90,7 +134,12 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
   const breadcrumb = useMemo(() => {
     const items: { label: string; mode?: string }[] = [];
     if (source) items.push({ label: source.name || "Source" });
-    confirmed.forEach((c) => {
+    confirmed.forEach((c, i) => {
+      // BUG2: surface the access-walk to the boarding stop before the first
+      // transit hop (display-only; consistent with HopTreeView).
+      if (i === 0 && c.mode !== "walk" && c.accessWalk && (c.accessWalk.distanceKm ?? 0) >= 0.05) {
+        items.push({ label: `Walk to ${c.accessWalk.stopName}`, mode: "walk" });
+      }
       items.push({ label: `${c.routeNumber ?? ""} ${c.mode ?? ""}`.trim(), mode: c.mode });
       items.push({ label: c.destinationStop?.name ?? "…" });
     });
@@ -99,7 +148,9 @@ export default function SegmentFlowView({ groupSize, budget }: { groupSize?: num
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, dest, confirmed, complete]);
 
-  const totalTime = useMemo(() => confirmed.reduce((a, c) => a + (c.durationMin ?? 0), 0), [confirmed]);
+  const totalTime = useMemo(() =>
+    confirmed.reduce((a, c, i) => a + (c.durationMin ?? 0) +
+      (i === 0 && c.mode !== "walk" ? (c.accessWalk?.durationMin ?? 0) : 0), 0), [confirmed]);
   const totalFare = useMemo(() => confirmed.reduce((a, c) => a + (c.fare ?? 0), 0), [confirmed]);
   const perPersonFare = useMemo(() => confirmed.reduce((a, c) => a + (c.perPersonFare ?? c.fare ?? 0), 0), [confirmed]);
   const groupFare = gs * perPersonFare;

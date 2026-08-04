@@ -7,11 +7,35 @@ Static, fixed prices only. Never invent slabs.
 """
 import json
 import math
+import re
 from typing import Literal
 from functools import lru_cache
 
 from .data_schema import FareResult
 from .. import config
+
+
+# BMTC AC / Vajra markers seen in the GTFS route short-names: a "-AC" suffix
+# (e.g. 255-AC) or a Vajra "VJ"/"VJP" token. "VJN"/"VJM"/"VJC" are adjacency
+# place abbreviations (Vijayanagara, VJC layout), NOT AC — excluded via the
+# negative class below.
+_AC_MARKER = re.compile(r"(?:-AC(?:$|[^A-Za-z0-9])|VJP|VJ(?=$|[^A-Za-zP]))", re.IGNORECASE)
+
+
+def bus_route_class(route_number: str | None) -> Literal["ac", "nonac", "kia"]:
+    """Classify a BMTC route number into the fare tier to charge.
+
+    Data-backed from the route short-name: KIA prefix -> KIA Vayu Vajra, an
+    explicit "-AC"/VJ/VJP marker -> AC Vajra, otherwise the ordinary tier.
+    This replaces the old blanket "nonac" assumption (Fix 3).
+    """
+    if not route_number:
+        return "nonac"
+    if route_number.upper().startswith("KIA"):
+        return "kia"
+    if _AC_MARKER.search(route_number):
+        return "ac"
+    return "nonac"
 
 PassengerType = Literal["adult", "child", "senior"]
 

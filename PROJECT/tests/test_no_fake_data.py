@@ -68,16 +68,17 @@ def test_metro_only_purple_green_no_blue_no_yelahanka(builder):
 
 
 def test_fares_match_fare_engine(gtfs, db, builder):
-    from backend.services.fare_engine import bmtc_fare, kia_fare, metro_fare
+    from backend.services.fare_engine import bmtc_fare, bus_route_class, kia_fare, metro_fare
 
     opts = _all_options(builder, YELAHANKA_SCHOOL, WONDERLA) + \
         _all_options(builder, YELAHANKA_SCHOOL, MG_ROAD)
     for o in opts:
         dist_km = o["distanceKm"]
         if o["mode"] == "bus":
+            route_class = bus_route_class(o["routeNumber"])
             expected = (kia_fare(o["routeNumber"], dist_km).amount
-                        if o["routeNumber"].upper().startswith("KIA")
-                        else bmtc_fare("nonac", dist_km).amount)
+                        if route_class == "kia"
+                        else bmtc_fare(route_class, dist_km).amount)
             assert abs(o["fare"] - expected) < 0.51, f"{o['routeNumber']} fare {o['fare']} != {expected}"
         elif o["mode"] == "metro":
             line = "green" if "Green" in (o.get("line") or o["routeNumber"]) else "purple"

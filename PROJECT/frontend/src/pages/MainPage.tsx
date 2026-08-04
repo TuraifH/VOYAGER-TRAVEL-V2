@@ -3,7 +3,7 @@ import { useApp, type Mode } from "../context/AppContext";
 import HeaderBar from "../components/HeaderBar";
 import MapView from "../components/MapView";
 import SearchInput, { SearchResults } from "../components/SearchPanel";
-import AToBInput, { AtoBResults } from "../components/AToBPanel";
+import AToBInput, { AtoBResults, QuickSuggestionResults } from "../components/AToBPanel";
 import TripInput, { TripResults } from "../components/TripPanel";
 import DiscoveryPanel from "../components/DiscoveryPanel";
 import NewsPopup from "../components/NewsPopup";
@@ -70,6 +70,7 @@ export default function MainPage() {
         <aside className="results-window glass-strong">
           {mode === "search" && <SearchResults />}
           {mode === "atob" && <AtoBResults />}
+          {mode === "atob" && <QuickSuggestionResults />}
           {mode === "trip" && <TripResults />}
         </aside>
 

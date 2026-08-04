@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "../context/AppContext";
 import { api } from "../services/api";
-import type { LatLng, PlaceResult, RidePrice } from "../types";
+import type { LatLng, PlaceResult, QuickPlan, RidePrice } from "../types";
 import "./AToBPanel.css";
 
 type SubMode = "transit" | "ride" | "drive" | "walk";
@@ -90,6 +90,64 @@ function RideCard({ p, onSelect }: { p: RidePrice; onSelect: (p: RidePrice) => v
   );
 }
 
+// ---------------------------------------------------------------- quick suggestion
+function modeLabel(m: string): string {
+  switch (m) {
+    case "bus": return "Bus";
+    case "metro": return "Metro";
+    case "walk": return "Walk";
+    case "ride": return "Ride";
+    default: return m;
+  }
+}
+
+function QuickCard({ p }: { p: QuickPlan }) {
+  return (
+    <div className="ride-card glass anim-in">
+      <div className="spread">
+        <span className="row">
+          <span className="material-symbols-outlined">bolt</span>
+          <b>Quick suggestion</b>
+          <span className="badge est">AUTO-COMPUTED</span>
+        </span>
+      </div>
+      <div className="spread mt8">
+        <span className="row">
+          <span className="price">₹{p.per_person_fare.toFixed(0)}/person</span>
+          <span className="muted small">{p.total_duration_min} min • {p.total_walk_km.toFixed(1)} km walk • {p.transfers} transfer{p.transfers === 1 ? "" : "s"}</span>
+        </span>
+      </div>
+      <div className="quick-legs mt8">
+        {p.legs.map((l, i) => (
+          <div key={i} className="quick-leg muted small">
+            <span className="row">
+              <span className="material-symbols-outlined">
+                {l.mode === "walk" ? "directions_walk" : l.mode === "metro" ? "subway" : "directions_bus"}
+              </span>
+              <b>{modeLabel(l.mode)}{l.route_number ? ` ${l.route_number}` : ""}</b>
+            </span>
+            <span>{l.from_stop || "Here"}{l.depart_time ? ` ${l.depart_time}` : ""} → {l.to_stop || "Dest"}</span>
+            {l.arrive_time && <span className="muted">{l.arrive_time} • {l.duration_min} min</span>}
+          </div>
+        ))}
+      </div>
+      <div className="muted small mt8">Note: one pre-computed best route. For a step-by-step picker use "Find routes" above.</div>
+    </div>
+  );
+}
+
+export function QuickSuggestionResults() {
+  const { quickPlans } = useApp();
+  if (!quickPlans?.length) {
+    return <div className="results-empty muted small">Quick suggestion will appear here.</div>;
+  }
+  return (
+    <div className="rides">
+      {quickPlans.slice(0, 3).map((p, i) => <QuickCard key={i} p={p} />)}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------- results window
 export function AtoBResults() {
   const { source, dest, prices, fuel, setFlyTo, setRidePath } = useApp();
@@ -127,7 +185,7 @@ export function AtoBResults() {
 // ---------------------------------------------------------------- input window
 export default function AtoBInput() {
   const { source, dest, setSource, setDest, swap, setFlyTo, setPlaces, setRidePath,
-          setFlowOpen, setFlowParams, setPrices, setFuel, clearTransient } = useApp();
+          setFlowOpen, setFlowParams, setPrices, setFuel, setQuickPlans, clearTransient } = useApp();
   const setResults = ({ fuel }: { fuel?: number | null }) => setFuel(fuel ?? null);
   const [travelMode, setTravelMode] = useState<TravelMode>("public");
   const [subMode, setSubMode] = useState<SubMode>("transit");
@@ -187,6 +245,21 @@ export default function AtoBInput() {
     }
   };
 
+  const quickSuggestion = async () => {
+    if (!source || !dest) return;
+    setLoading(true);
+    clearTransient();
+    setFlowOpen(false);
+    try {
+      const resp = await api.quickSuggestion(source, dest, groupSize, budget);
+      setQuickPlans(resp.plans ?? []);
+    } catch {
+      setQuickPlans([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="atob-panel">
       <div className="mode-tabs row">
@@ -234,6 +307,12 @@ export default function AtoBInput() {
         {loading ? <span className="spinner inline" /> : <span className="material-symbols-outlined">route</span>}
         {travelMode === "drive" ? "Estimate drive" : subMode === "ride" ? "Get ride prices" : "Find routes"}
       </button>
+      {travelMode === "public" && subMode === "transit" && (
+        <button className="btn ghost full mt8" onClick={quickSuggestion} disabled={!source || !dest || loading}>
+          <span className="material-symbols-outlined">bolt</span>
+          Quick suggestion (one auto-computed route)
+        </button>
+      )}
     </div>
   );
 }

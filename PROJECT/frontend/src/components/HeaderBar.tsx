@@ -4,6 +4,8 @@ import { useApp } from "../context/AppContext";
 import type { LatLng, WeatherNow } from "../types";
 import "./HeaderBar.css";
 
+declare const __BUILD_ID__: string;
+
 function Clock() {
   const [now, setNow] = useState(() => new Date());
   const [showDate, setShowDate] = useState(false);
@@ -274,7 +276,8 @@ export default function HeaderBar() {
     <header className="header-bar glass">
       <div className="brand row">
         <span className="logo">VOYAGER</span>
-        <V2Badge />
+        <span className="logo-sub">v2</span>
+        <span className="logo-sub build-id" title={`Build ${__BUILD_ID__}`}>{__BUILD_ID__}</span>
       </div>
       <div className="header-right row">
         <WeatherCluster weather={weather} />

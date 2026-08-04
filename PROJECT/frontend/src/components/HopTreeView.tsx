@@ -181,16 +181,40 @@ function buildTree(
   const root = mk(0, LEFT_PAD, RAIL_Y, source?.name ?? "Source", "source",
     kmRoot != null ? `→ ${kmRoot.toFixed(1)} km to dest` : null, undefined, true);
 
+  // BUG2: a transit first hop implies walking to its boarding point first. Show
+  // that access walk as a real node unless it is trivial (<50 m). The walk is
+  // display-only here — `confirmed` stays the chained leg list the backend
+  // time-chains on, so indices for alternatives are shifted below accordingly.
+  const access = confirmed[0]?.accessWalk;
+  const hasAccessWalk = confirmed.length > 0 &&
+    confirmed[0].mode !== "walk" &&
+    !!access &&
+    (access.distanceKm ?? 0) >= 0.05;
+  const shift = hasAccessWalk ? 1 : 0;
+
   const rail: TNode[] = [root];
+  if (hasAccessWalk && access) {
+    const wn = mk(1, LEFT_PAD + COL_W, RAIL_Y,
+      `Walk to ${access.stopName}`, "stop",
+      `→ ${access.distanceKm.toFixed(2)} km · ${access.durationMin} min`, {
+        name: access.stopName, lat: access.lat, lng: access.lng,
+      }, true);
+    rail.push(wn);
+    edges.push({
+      from: root, to: wn, option: {} as HopOption, confirmed: true,
+      label: "walk", mode: "walk", fromDepth: 0, km: access.distanceKm,
+    });
+  }
+
   for (let d = 0; d < confirmed.length; d++) {
     const opt = confirmed[d];
     const km = havKm(opt.destinationStop, dest);
-    const node = mk(d + 1, LEFT_PAD + (d + 1) * COL_W, RAIL_Y,
+    const node = mk(d + 1 + shift, LEFT_PAD + (d + 1 + shift) * COL_W, RAIL_Y,
       opt.destinationStop?.name ?? "Stop", "stop",
       km != null ? `→ ${km.toFixed(1)} km to dest` : null, opt.destinationStop, true);
     rail.push(node);
     edges.push({
-      from: rail[d], to: node, option: opt, confirmed: true,
+      from: rail[rail.length - 2], to: node, option: opt, confirmed: true,
       label: edgeLabel(opt), mode: opt.mode ?? "walk",
       fromDepth: d, km: opt.distanceKm ?? null,
     });
@@ -209,13 +233,21 @@ function buildTree(
   }
 
   // ---- alternatives: fan above/below each rail node -----------------
-  for (let d = 0; d <= rail.length - 1; d++) {
-    const seg = levels[d];
+  // Iterate over rail node columns. The segment level feeding a rail column is
+  // (col - shift): the access-walk column consumed a column but no segment level.
+  // Confirmed may be empty (initial state) so Source's own branches always render.
+  const walkCol = hasAccessWalk ? 1 : -1;
+  for (const anchorNode of rail) {
+    const col = anchorNode.depth;
+    if (col === walkCol) continue;
+    const colLevel = col - shift;
+    if (colLevel < 0 || colLevel >= levels.length) continue;
+    const seg = levels[colLevel];
     if (!seg) continue;
-    const base = confirmed.slice(0, d);
-    let alts = optionsForLevel(seg, base, d);
+    const base = confirmed.slice(0, colLevel);
+    let alts = optionsForLevel(seg, base, colLevel);
     // never duplicate the rail's own next stop as an alternative
-    const railNext = d < rail.length - 1 ? rail[d + 1].label.toLowerCase() : null;
+    const railNext = confirmed[colLevel]?.destinationStop?.name?.toLowerCase() ?? null;
     alts = alts.filter((o) => {
       const stopName = o.destinationStop?.name?.toLowerCase() ?? "";
       return !(railNext && stopName === railNext);
@@ -228,16 +260,17 @@ function buildTree(
       const km = havKm(opt.destinationStop, dest);
       const side = sides[k % sides.length];
       const offset = (Math.floor(k / sides.length) + 1) * ALT_OFF * side;
-      const node = mk(d + 1, LEFT_PAD + (d + 1) * COL_W, RAIL_Y + offset,
+      const node = mk(col + 1, LEFT_PAD + (col + 1) * COL_W, RAIL_Y + offset,
         opt.destinationStop?.name ?? "Stop", "stop",
-        km != null ? `→ ${km.toFixed(1)} km to dest` : null, opt.destinationStop);
+        km != null ? `\u2192 ${km.toFixed(1)} km to dest` : null, opt.destinationStop);
       edges.push({
-        from: rail[d], to: node, option: opt, confirmed: false,
+        from: anchorNode, to: node, option: opt, confirmed: false,
         label: edgeLabel(opt), mode: opt.mode ?? "walk",
-        fromDepth: d, km: opt.distanceKm ?? null,
+        fromDepth: colLevel, km: opt.distanceKm ?? null,
       });
     });
   }
+
 
   // ---- bounds --------------------------------------------------------
   const lastCol = Math.max(0, ...nodes.map((n) => n.depth));
