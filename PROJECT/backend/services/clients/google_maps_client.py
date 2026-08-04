@@ -97,20 +97,6 @@ class GoogleMapsClient:
     def _places_headers(self) -> dict:
         return {"X-Goog-Api-Key": self._key, "Content-Type": "application/json"}
 
-    @staticmethod
-    def _photo_url(photo_name: str | None, max_width: int = 400) -> str | None:
-        if not photo_name:
-            return None
-        return (f"https://places.googleapis.com/v1/{photo_name}/media"
-                f"?maxWidthPx={max_width}&key=PLACEHOLDER")
-
-    def place_photo_url(self, place_id: str, photo_name: str | None, max_width: int = 400) -> str | None:
-        """Real Google Places photo URL (requires API key in query param at fetch time)."""
-        if not photo_name:
-            return None
-        return (f"https://places.googleapis.com/v1/{photo_name}/media"
-                f"?maxWidthPx={max_width}&key={self._key}")
-
     def fetch_photo(self, photo_name: str | None, max_width: int = 400) -> tuple[bytes, str] | None:
         """Fetch real photo bytes server-side so the API key never leaves the backend.
 
@@ -355,40 +341,6 @@ class GoogleMapsClient:
             "primary_type": r.get("type") or r.get("class") or None,
             "query": query,
         }
-
-    def place_details(self, place_id: str) -> dict | None:
-        """Place Details (New) -> enriched dict incl. hours/status/phone/website."""
-        key = f"details:{place_id}"
-        cached = self._cached(key)
-        if cached is not None:
-            return cached
-        if not self._key:
-            return None
-        try:
-            resp = requests.get(
-                f"{_PLACES_BASE}/places/{place_id}",
-                headers=self._headers_with_mask(
-                    "id,displayName,formattedAddress,location,rating,userRatingCount,"
-                    "priceLevel,businessStatus,types,primaryType,photos,"
-                    "regularOpeningHours,currentOpeningHours,"
-                    "nationalPhoneNumber,websiteUri,reviews"),
-                timeout=self._timeout)
-            resp.raise_for_status()
-            d = self._to_place_dict(resp.json(), "")
-            d["reviews"] = [
-                {"author_name": r.get("authorAttribution", {}).get("displayName", ""),
-                 "rating": float(r.get("rating", 0.0)),
-                 "text": r.get("text", {}).get("text", ""),
-                 "date": r.get("publishTime", ""),
-                 "source": "google_places"}
-                for r in resp.json().get("reviews", [])
-            ]
-            out = d
-        except (requests.RequestException, ValueError) as exc:
-            logger.warning("[maps] place_details(%s) failed: %s", place_id, exc)
-            out = None
-        self._store(key, out)
-        return out
 
     # -------------------------------------------------------------- directions
     def directions(self, origin: tuple[float, float], dest: tuple[float, float],

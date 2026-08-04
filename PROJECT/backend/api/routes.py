@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Response
 
+from backend import config
 from backend.services import app_state
 from backend.services.data_schema import Place
 
@@ -99,8 +100,10 @@ def drive_route(req: DriveRequest):
         return {"geometry": [[req.origin.lat, req.origin.lng],
                              [req.destination.lat, req.destination.lng]],
                 "distance_m": 0.0, "duration_s": 0.0, "path_source": "interpolated",
-                "mode": "car"}
-    return result.model_dump(mode="json")
+                "mode": "car", "fuel_price_per_liter": config.FUEL_PRICE_PER_LITER}
+    data = result.model_dump(mode="json")
+    data["fuel_price_per_liter"] = config.FUEL_PRICE_PER_LITER
+    return data
 
 
 @router.post("/segments")

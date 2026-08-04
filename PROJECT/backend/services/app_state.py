@@ -58,13 +58,20 @@ def _load_all():
     if _traffic is None:
         _traffic = TrafficSlowdownModel()  # PROMPT_7 ML crowd index (lazy, <1s)
     if _agent is None:
+        from .langgraph.tools.news_tools import NewsTool
+        from .langgraph.tools.pricing_tools import PricingTool
+        from .langgraph.tools.search_tools import GeoTool, SearchTool
         from .langgraph.tools.traffic_tools import TrafficTool
+        from .langgraph.tools.train_tools import TrainTool
+        from .langgraph.tools.weather_tools import WeatherTool
         _agent = VoyagerLangGraph(
-            weather=_weather,
-            news=_news,
-            search=_search,
-            train=_trains,
-            traffic=TrafficTool(model=_traffic),
+            weather=WeatherTool(client=_weather),
+            news=NewsTool(engine=_news),
+            search=SearchTool(search=_search),
+            geo=GeoTool(maps=_search.maps),
+            train=TrainTool(service=_trains),
+            pricing=PricingTool(maps=_search.maps, serpapi=_search.serpapi),
+            traffic=TrafficTool(maps=_search.maps, model=_traffic),
         )
     return _gtfs, _db, _gh, _builder, _search, _news, _trains, _weather, _traffic, _agent
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ...clients.google_maps_client import GoogleMapsClient
 from ...clients.serpapi_client import SerpAPIClient
-from ...search_service import SearchService, _to_place
+from ...search_service import SearchService
 from ...data_schema import Place
 
 

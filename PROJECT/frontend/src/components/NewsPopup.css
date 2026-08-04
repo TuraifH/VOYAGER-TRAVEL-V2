@@ -1,10 +1,10 @@
 .news-popup {
   position: absolute;
-  left: 12px;
-  top: 12px;
-  bottom: auto;
+  right: 24px;
+  top: 24px;
+  left: auto;
   width: 280px;
-  z-index: 1000; /* above Leaflet panes (200–700) + controls (800); trapped by .map-wrap */
+  z-index: 1000; /* sibling of .map-wrap in .app-body (z 0): above input/results windows (900) */
   overflow: hidden;
 }
 .news-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; }
